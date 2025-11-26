@@ -15,10 +15,9 @@ import { ScriptTokens } from '../bindings/tokens';
 import { FileStatistics } from '../bindings/file_stats';
 import { DuckDBConfig } from '../bindings/config';
 import { InstantiationProgress } from '../bindings/progress';
-import { arrowToSQLField } from '../json_typedef';
 import { WebFile } from '../bindings/web_file';
 import { DuckDBDataProtocol } from '../bindings';
-import { searchOPFSFiles, isOPFSProtocol } from "../utils/opfs_util";
+import { searchOPFSFiles, isOPFSProtocol } from '../utils/opfs_util';
 import { ProgressEntry } from '../log';
 
 const TEXT_ENCODER = new TextEncoder();
@@ -112,7 +111,7 @@ export class AsyncDuckDB implements AsyncDuckDBBindings {
         transfer: ArrayBuffer[] = [],
     ): Promise<WorkerTaskReturnType<W>> {
         if (!this._worker) {
-            console.error('cannot send a message since the worker is not set!:' + task.type+"," + task.data);
+            console.error('cannot send a message since the worker is not set!:' + task.type + ',' + task.data);
             return undefined as any;
         }
         const mid = this._nextMessageId++;
@@ -341,7 +340,10 @@ export class AsyncDuckDB implements AsyncDuckDBBindings {
     }
     /** Try to drop files */
     public async dropFiles(names?: string[]): Promise<null> {
-        const task = new WorkerTask<WorkerRequestType.DROP_FILES, string[] | undefined, null>(WorkerRequestType.DROP_FILES, names);
+        const task = new WorkerTask<WorkerRequestType.DROP_FILES, string[] | undefined, null>(
+            WorkerRequestType.DROP_FILES,
+            names,
+        );
         return await this.postTask(task);
     }
     /** Flush all files */
@@ -418,12 +420,12 @@ export class AsyncDuckDB implements AsyncDuckDBBindings {
 
     /** Run a query */
     public async runQuery(conn: ConnectionID, text: string): Promise<Uint8Array> {
-        if( this.shouldOPFSFileHandling() ){
+        if (this.shouldOPFSFileHandling()) {
             const files = await this.registerOPFSFileFromSQL(text);
             try {
                 return await this._runQueryAsync(conn, text);
             } finally {
-                if( files.length > 0 ){
+                if (files.length > 0) {
                     await this.dropFiles(files);
                 }
             }
@@ -446,12 +448,12 @@ export class AsyncDuckDB implements AsyncDuckDBBindings {
         text: string,
         allowStreamResult: boolean = false,
     ): Promise<Uint8Array | null> {
-        if( this.shouldOPFSFileHandling() ){
+        if (this.shouldOPFSFileHandling()) {
             const files = await this.registerOPFSFileFromSQL(text);
             try {
                 return await this._startPendingQueryAsync(conn, text, allowStreamResult);
             } finally {
-                if( files.length > 0 ){
+                if (files.length > 0) {
                     await this.dropFiles(files);
                 }
             }
@@ -668,17 +670,6 @@ export class AsyncDuckDB implements AsyncDuckDBBindings {
     }
     /** Insert a csv file */
     public async insertCSVFromPath(conn: ConnectionID, path: string, options: CSVInsertOptions): Promise<void> {
-        // Flatten the table options
-        if (options.columns !== undefined) {
-            const out = [];
-            for (const k in options.columns) {
-                const type = options.columns[k];
-                out.push(arrowToSQLField(k, type));
-            }
-            options.columnsFlat = out;
-            delete options.columns;
-        }
-
         // Pass to the worker
         const task = new WorkerTask<WorkerRequestType.INSERT_CSV_FROM_PATH, [number, string, CSVInsertOptions], null>(
             WorkerRequestType.INSERT_CSV_FROM_PATH,
@@ -688,17 +679,6 @@ export class AsyncDuckDB implements AsyncDuckDBBindings {
     }
     /** Insert a json file */
     public async insertJSONFromPath(conn: ConnectionID, path: string, options: JSONInsertOptions): Promise<void> {
-        // Flatten the table options
-        if (options.columns !== undefined) {
-            const out = [];
-            for (const k in options.columns) {
-                const type = options.columns[k];
-                out.push(arrowToSQLField(k, type));
-            }
-            options.columnsFlat = out;
-            delete options.columns;
-        }
-
         // Pass to the worker
         const task = new WorkerTask<WorkerRequestType.INSERT_JSON_FROM_PATH, [number, string, JSONInsertOptions], null>(
             WorkerRequestType.INSERT_JSON_FROM_PATH,
@@ -707,9 +687,9 @@ export class AsyncDuckDB implements AsyncDuckDBBindings {
         await this.postTask(task);
     }
 
-    private shouldOPFSFileHandling():boolean {
-        if( isOPFSProtocol(this.config.path ?? "")){
-            return this.config.opfs?.fileHandling == "auto";
+    private shouldOPFSFileHandling(): boolean {
+        if (isOPFSProtocol(this.config.path ?? '')) {
+            return this.config.opfs?.fileHandling == 'auto';
         }
         return false;
     }
@@ -723,7 +703,7 @@ export class AsyncDuckDB implements AsyncDuckDBBindings {
                 result.push(file);
             } catch (e) {
                 console.error(e);
-                throw new Error("File Not found:" + file);
+                throw new Error('File Not found:' + file);
             }
         }
         return result;

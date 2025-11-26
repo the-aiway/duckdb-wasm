@@ -9,10 +9,7 @@ import { dropResponseBuffers, DuckDBRuntime, readString, callSRet, copyBuffer, D
 import { CSVInsertOptions, JSONInsertOptions, ArrowInsertOptions } from './insert_options';
 import { ScriptTokens } from './tokens';
 import { FileStatistics } from './file_stats';
-import { arrowToSQLField, arrowToSQLType } from '../json_typedef';
 import { WebFile } from './web_file';
-import { UDFFunction, UDFFunctionDeclaration } from './udf_function';
-import * as arrow from 'apache-arrow';
 
 const TEXT_ENCODER = new TextEncoder();
 
@@ -42,13 +39,10 @@ export abstract class DuckDBBindingsBase implements DuckDBBindings {
     protected _initPromise: Promise<void> | null = null;
     /** The resolver for the open promise (called by onRuntimeInitialized) */
     protected _initPromiseResolver: () => void = () => {};
-    /** The next UDF id */
-    protected _nextUDFId: number;
 
     constructor(logger: Logger, runtime: DuckDBRuntime) {
         this._logger = logger;
         this._runtime = runtime;
-        this._nextUDFId = 1;
     }
 
     /** Get the logger */
@@ -281,49 +275,8 @@ export abstract class DuckDBBindingsBase implements DuckDBBindings {
         return JSON.parse(res) as string[];
     }
 
-    /** Create a scalar function */
-    public createScalarFunction(
-        conn: number,
-        name: string,
-        returns: arrow.DataType,
-        func: (...args: any[]) => void,
-    ): void {
-        const decl: UDFFunctionDeclaration = {
-            functionId: this._nextUDFId,
-            name: name,
-            returnType: arrowToSQLType(returns),
-        };
-        const def: UDFFunction = {
-            functionId: decl.functionId,
-            connectionId: conn,
-            name: name,
-            returnType: returns,
-            func,
-        };
-        this._nextUDFId += 1;
-        const [s, d, n] = callSRet(
-            this.mod,
-            'duckdb_web_udf_scalar_create',
-            ['number', 'string'],
-            [conn, JSON.stringify(decl)],
-        );
-        if (s !== StatusCode.SUCCESS) {
-            throw new Error(readString(this.mod, d, n));
-        }
-        dropResponseBuffers(this.mod);
-        globalThis.DUCKDB_RUNTIME._udfFunctions = (globalThis.DUCKDB_RUNTIME._udfFunctions || new Map()).set(
-            def.functionId,
-            def,
-        );
-        if (this.pthread) {
-            for (const worker of [...this.pthread.runningWorkers, ...this.pthread.unusedWorkers]) {
-                worker.postMessage({
-                    cmd: 'registerUDFFunction',
-                    udf: def,
-                });
-            }
-        }
-    }
+    // Note: UDF support removed - requires Arrow types
+    // Users can use SQL functions or implement UDFs via extension modules
 
     /** Prepare a statement and return its identifier */
     public createPrepared(conn: number, text: string): number {
@@ -409,17 +362,7 @@ export abstract class DuckDBBindingsBase implements DuckDBBindings {
 
     /** Insert csv from path */
     public insertCSVFromPath(conn: number, path: string, options: CSVInsertOptions): void {
-        // Stringify options
-        if (options.columns !== undefined) {
-            options.columnsFlat = [];
-            for (const k in options.columns) {
-                options.columnsFlat.push(arrowToSQLField(k, options.columns[k]));
-            }
-        }
-        const opt = { ...options } as any;
-        opt.columns = opt.columnsFlat;
-        delete opt.columnsFlat;
-        const optJSON = JSON.stringify(opt);
+        const optJSON = JSON.stringify(options);
 
         // Call wasm function
         const [s, d, n] = callSRet(
@@ -434,17 +377,7 @@ export abstract class DuckDBBindingsBase implements DuckDBBindings {
     }
     /** Insert json from path */
     public insertJSONFromPath(conn: number, path: string, options: JSONInsertOptions): void {
-        // Stringify options
-        if (options.columns !== undefined) {
-            options.columnsFlat = [];
-            for (const k in options.columns) {
-                options.columnsFlat.push(arrowToSQLField(k, options.columns[k]));
-            }
-        }
-        const opt = { ...options } as any;
-        opt.columns = opt.columnsFlat;
-        delete opt.columnsFlat;
-        const optJSON = JSON.stringify(opt);
+        const optJSON = JSON.stringify(options);
 
         // Call wasm function
         const [s, d, n] = callSRet(

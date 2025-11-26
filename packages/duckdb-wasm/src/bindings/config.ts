@@ -39,7 +39,7 @@ export interface DuckDBOPFSConfig {
      * - "auto": Automatically register `opfs://` files and drop them after execution.
      * - "manual": Files must be manually registered and dropped.
      */
-    fileHandling?: "auto" | "manual";
+    fileHandling?: 'auto' | 'manual';
 }
 
 export enum DuckDBAccessMode {
