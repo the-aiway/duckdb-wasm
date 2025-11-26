@@ -117,6 +117,9 @@ WebDBConfig WebDBConfig::ReadFrom(std::string_view args_json) {
         if (doc.HasMember("customUserAgent") && doc["customUserAgent"].IsString()) {
             config.custom_user_agent = doc["customUserAgent"].GetString();
         }
+        if (doc.HasMember("authToken") && doc["authToken"].IsString()) {
+            config.auth_token = doc["authToken"].GetString();
+        }
     }
     if (!config.query.cast_bigint_to_double.has_value()) {
         config.query.cast_bigint_to_double = !duckdb_web_test_platform_feature(PlatformFeature::BIGINT64ARRAY);

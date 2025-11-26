@@ -335,6 +335,13 @@ rapidjson::Value WebFileSystem::WebFile::WriteInfo(rapidjson::Document &doc) con
         else
             value.AddMember("reliableHeadRequests", false, allocator);
     }
+    if ((data_protocol_ == DataProtocol::HTTP || data_protocol_ == DataProtocol::S3) &&
+        !filesystem_.config_->auth_token.empty()) {
+        value.AddMember("bearerToken",
+                        rapidjson::Value{filesystem_.config_->auth_token.c_str(),
+                                         static_cast<rapidjson::SizeType>(filesystem_.config_->auth_token.size())},
+                        allocator);
+    }
     value.AddMember("collectStatistics", filesystem_.file_statistics_->TracksFile(file_name_), doc.GetAllocator());
 
     if (data_protocol_ == DataProtocol::S3) {
@@ -528,6 +535,13 @@ rapidjson::Value WebFileSystem::WriteGlobalFileInfo(rapidjson::Document &doc, ui
         value.AddMember("reliableHeadRequests", true, allocator);
     } else {
         value.AddMember("reliableHeadRequests", false, allocator);
+    }
+
+    if (!config_->auth_token.empty()) {
+        value.AddMember("bearerToken",
+                        rapidjson::Value{config_->auth_token.c_str(),
+                                         static_cast<rapidjson::SizeType>(config_->auth_token.size())},
+                        allocator);
     }
 
     value.AddMember("s3Config", writeS3Config(config_->duckdb_config_options, allocator), allocator);

@@ -215,6 +215,9 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                             addS3Headers(xhr, file.s3Config, file.dataUrl!, 'HEAD');
                         } else {
                             xhr.open('HEAD', file.dataUrl!, false);
+                            if (file.bearerToken) {
+                                xhr.setRequestHeader('Authorization', `Bearer ${file.bearerToken}`);
+                            }
                         }
                         xhr.send(null);
 
@@ -257,19 +260,31 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                                 addS3Headers(xhr, file.s3Config, file.dataUrl!, 'HEAD');
                             } else {
                                 xhr.open('HEAD', file.dataUrl!, false);
+                                if (file.bearerToken) {
+                                    xhr.setRequestHeader('Authorization', `Bearer ${file.bearerToken}`);
+                                }
                             }
                             xhr.setRequestHeader('Range', `bytes=0-`);
                             xhr.send(null);
 
                             // Supports range requests
                             contentLength = null;
-                            try { contentLength = xhr.getResponseHeader('Content-Length'); } catch (e: any) {console.warn(`Failed to get Content-Length on request`);}
+                            try {
+                                contentLength = xhr.getResponseHeader('Content-Length');
+                            } catch (e: any) {
+                                console.warn(`Failed to get Content-Length on request`);
+                            }
                             if (contentLength !== null && xhr.status == 206) {
                                 const result = mod._malloc(3 * 8);
                                 mod.HEAPF64[(result >> 3) + 0] = +contentLength;
                                 mod.HEAPF64[(result >> 3) + 1] = 0;
                                 let modification_time = 0;
-                                try { modification_time = new Date(xhr.getResponseHeader('Last-Modified')??"").getTime() / 1000; } catch (e: any) {console.warn(`Failed to get Last-Modified on request`);}
+                                try {
+                                    modification_time =
+                                        new Date(xhr.getResponseHeader('Last-Modified') ?? '').getTime() / 1000;
+                                } catch (e: any) {
+                                    console.warn(`Failed to get Last-Modified on request`);
+                                }
                                 mod.HEAPF64[(result >> 3) + 2] = +modification_time;
                                 return result;
                             }
@@ -292,12 +307,19 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                                 addS3Headers(xhr, file.s3Config, file.dataUrl!, 'GET');
                             } else {
                                 xhr.open('GET', file.dataUrl!, false);
+                                if (file.bearerToken) {
+                                    xhr.setRequestHeader('Authorization', `Bearer ${file.bearerToken}`);
+                                }
                             }
                             xhr.responseType = 'arraybuffer';
                             xhr.setRequestHeader('Range', `bytes=0-0`);
                             xhr.send(null);
                             let actualContentLength = null;
-                            try { actualContentLength = xhr.getResponseHeader('Content-Length'); } catch (e: any) {console.warn(`Failed to get Content-Length on request`);}
+                            try {
+                                actualContentLength = xhr.getResponseHeader('Content-Length');
+                            } catch (e: any) {
+                                console.warn(`Failed to get Content-Length on request`);
+                            }
                             const contentRange = actualContentLength?.split('/')[1];
                             const contentLength2 = actualContentLength;
 
@@ -313,13 +335,20 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                                     addS3Headers(head, file.s3Config, file.dataUrl!, 'HEAD');
                                 } else {
                                     head.open('HEAD', file.dataUrl!, false);
+                                    if (file.bearerToken) {
+                                        head.setRequestHeader('Authorization', `Bearer ${file.bearerToken}`);
+                                    }
                                 }
                                 head.setRequestHeader('Range', `bytes=0-`);
                                 head.send(null);
 
                                 // Supports range requests
                                 contentLength = null;
-                                try { contentLength = head.getResponseHeader('Content-Length'); } catch (e: any) {console.warn(`Failed to get Content-Length on request`);}
+                                try {
+                                    contentLength = head.getResponseHeader('Content-Length');
+                                } catch (e: any) {
+                                    console.warn(`Failed to get Content-Length on request`);
+                                }
                                 if (contentLength !== null && +contentLength > 1) {
                                     presumedLength = contentLength;
                                 }
@@ -335,7 +364,12 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                                 mod.HEAPF64[(result >> 3) + 0] = +presumedLength;
                                 mod.HEAPF64[(result >> 3) + 1] = 0;
                                 let modification_time = 0;
-                                try { modification_time = new Date(xhr.getResponseHeader('Last-Modified')??"").getTime() / 1000; } catch (e: any) {console.warn(`Failed to get Last-Modified on request`);}
+                                try {
+                                    modification_time =
+                                        new Date(xhr.getResponseHeader('Last-Modified') ?? '').getTime() / 1000;
+                                } catch (e: any) {
+                                    console.warn(`Failed to get Last-Modified on request`);
+                                }
                                 mod.HEAPF64[(result >> 3) + 2] = +modification_time;
                                 return result;
                             }
@@ -353,11 +387,15 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                                 mod.HEAPF64[(result >> 3) + 0] = xhr.response.byteLength;
                                 mod.HEAPF64[(result >> 3) + 1] = data;
                                 let modification_time = 0;
-                                try { modification_time = new Date(xhr.getResponseHeader('Last-Modified')??"").getTime() / 1000; } catch (e: any) {console.warn(`Failed to get Last-Modified on request`);}
+                                try {
+                                    modification_time =
+                                        new Date(xhr.getResponseHeader('Last-Modified') ?? '').getTime() / 1000;
+                                } catch (e: any) {
+                                    console.warn(`Failed to get Last-Modified on request`);
+                                }
                                 mod.HEAPF64[(result >> 3) + 2] = +modification_time;
                                 return result;
                             }
-                            console.warn(`falling back to full HTTP read for: ${file.dataUrl}`);
                         }
                         // 3. Send non-range request
                         const xhr = new XMLHttpRequest();
@@ -366,6 +404,9 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                             addS3Headers(xhr, file.s3Config, file.dataUrl!, 'GET');
                         } else {
                             xhr.open('GET', file.dataUrl!, false);
+                            if (file.bearerToken) {
+                                xhr.setRequestHeader('Authorization', `Bearer ${file.bearerToken}`);
+                            }
                         }
                         xhr.responseType = 'arraybuffer';
                         xhr.send(null);
@@ -379,7 +420,12 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                             mod.HEAPF64[(result >> 3) + 0] = xhr.response.byteLength;
                             mod.HEAPF64[(result >> 3) + 1] = data;
                             let modification_time = 0;
-                            try { modification_time = new Date(xhr.getResponseHeader('Last-Modified')??"").getTime() / 1000; } catch (e: any) {console.warn(`Failed to get Last-Modified on request`);}
+                            try {
+                                modification_time =
+                                    new Date(xhr.getResponseHeader('Last-Modified') ?? '').getTime() / 1000;
+                            } catch (e: any) {
+                                console.warn(`Failed to get Last-Modified on request`);
+                            }
                             mod.HEAPF64[(result >> 3) + 2] = +modification_time;
                             return result;
                         }
@@ -404,7 +450,7 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
 
                     // Depending on file flags, return nullptr
                     if (flags & FileFlags.FILE_FLAGS_NULL_IF_NOT_EXISTS) {
-                       return 0;
+                        return 0;
                     }
 
                     // Fall back to empty buffered file in the browser
@@ -453,6 +499,10 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                     addS3Headers(xhr, globalInfo?.s3Config, path, 'HEAD');
                 } else {
                     xhr.open('HEAD', path!, false);
+                    const globalInfo = BROWSER_RUNTIME.getGlobalFileInfo(mod);
+                    if (globalInfo?.bearerToken) {
+                        xhr.setRequestHeader('Authorization', `Bearer ${globalInfo.bearerToken}`);
+                    }
                 }
                 xhr.send(null);
                 if (xhr.status != 200 && xhr.status !== 206) {
@@ -470,6 +520,10 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                         addS3Headers(xhr2, globalInfo?.s3Config, path, 'HEAD');
                     } else {
                         xhr2.open('GET', path!, false);
+                        const globalInfo = BROWSER_RUNTIME.getGlobalFileInfo(mod);
+                        if (globalInfo?.bearerToken) {
+                            xhr2.setRequestHeader('Authorization', `Bearer ${globalInfo.bearerToken}`);
+                        }
                     }
                     xhr2.setRequestHeader('Range', `bytes=0-0`);
                     xhr2.send(null);
@@ -478,7 +532,11 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                         return 0;
                     }
                     let contentLength = null;
-                    try { contentLength = xhr2.getResponseHeader('Content-Length'); } catch (e: any) {console.warn(`Failed to get Content-Length on request`);}
+                    try {
+                        contentLength = xhr2.getResponseHeader('Content-Length');
+                    } catch (e: any) {
+                        console.warn(`Failed to get Content-Length on request`);
+                    }
                     if (contentLength && +contentLength > 1) {
                         console.warn(
                             `Range request for ${path} did not return a partial response: ${xhr2.status} "${xhr2.statusText}"`,
@@ -513,6 +571,10 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                     addS3Headers(xhr, globalInfo?.s3Config, path, 'HEAD');
                 } else {
                     xhr.open('HEAD', path!, false);
+                    const globalInfo = BROWSER_RUNTIME.getGlobalFileInfo(mod);
+                    if (globalInfo?.bearerToken) {
+                        xhr.setRequestHeader('Authorization', `Bearer ${globalInfo.bearerToken}`);
+                    }
                 }
                 xhr.send(null);
                 return xhr.status == 206 || xhr.status == 200;
@@ -616,6 +678,9 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                             addS3Headers(xhr, file?.s3Config, file.dataUrl!, 'GET');
                         } else {
                             xhr.open('GET', file.dataUrl!, false);
+                            if (file.bearerToken) {
+                                xhr.setRequestHeader('Authorization', `Bearer ${file.bearerToken}`);
+                            }
                         }
                         xhr.responseType = 'arraybuffer';
                         xhr.setRequestHeader('Range', `bytes=${location}-${location + bytes - 1}`);

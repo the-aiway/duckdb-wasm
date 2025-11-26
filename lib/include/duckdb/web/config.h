@@ -119,6 +119,9 @@ struct WebDBConfig {
 
     std::string custom_user_agent = "";
 
+    /// Authentication token for HTTP requests
+    std::string auth_token = "";
+
     /// Read from a document
     static WebDBConfig ReadFrom(std::string_view args_json);
 };

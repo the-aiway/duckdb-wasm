@@ -15,9 +15,12 @@ class HTTPState;
 
 class HTTPWasmClient : public HTTPClient {
    public:
-    HTTPWasmClient(HTTPFSParams &http_params, const string &proto_host_port) { host_port = proto_host_port; }
+    HTTPWasmClient(HTTPFSParams &http_params, const string &proto_host_port) : params(http_params) { 
+        host_port = proto_host_port; 
+    }
     void Initialize(HTTPParams &params) override {}
     string host_port;
+    HTTPFSParams &params;
 
     unique_ptr<HTTPResponse> Get(GetRequestInfo &info) override {
         // clang-format off
@@ -39,15 +42,21 @@ class HTTPWasmClient : public HTTPClient {
             path = "https://" + path;
         }
 
+        // Create headers with bearer token if present
+        HTTPHeaders headers_with_auth = info.headers;
+        if (!params.bearer_token.empty()) {
+            headers_with_auth.Insert("Authorization", "Bearer " + params.bearer_token);
+        }
+
         int n = 0;
-        for (auto h : info.headers) {
+        for (auto h : headers_with_auth) {
             n++;
         }
 
         char **z = (char **)(void *)malloc(n * 4 * 2);
 
         int i = 0;
-        for (auto h : info.headers) {
+        for (auto h : headers_with_auth) {
             z[i] = (char *)malloc(h.first.size() * 4 + 1);
             memset(z[i], 0, h.first.size() * 4 + 1);
             memcpy(z[i], h.first.c_str(), h.first.size());
@@ -182,15 +191,22 @@ class HTTPWasmClient : public HTTPClient {
         if ((path.rfind("https://", 0) != 0) && (path.rfind("http://", 0) != 0)) {
             path = "https://" + path;
         }
+        
+        // Create headers with bearer token if present
+        HTTPHeaders headers_with_auth = info.headers;
+        if (!params.bearer_token.empty()) {
+            headers_with_auth.Insert("Authorization", "Bearer " + params.bearer_token);
+        }
+        
         int n = 0;
-        for (auto h : info.headers) {
+        for (auto h : headers_with_auth) {
             n++;
         }
 
         char **z = (char **)(void *)malloc(n * 4 * 2);
 
         int i = 0;
-        for (auto h : info.headers) {
+        for (auto h : headers_with_auth) {
             z[i] = (char *)malloc(h.first.size() * 4 + 1);
             memset(z[i], 0, h.first.size() * 4 + 1);
             memcpy(z[i], h.first.c_str(), h.first.size());
@@ -424,15 +440,21 @@ res->headers.Insert(head, tail);
             path = "https://" + path;
         }
 
+        // Create headers with bearer token if present
+        HTTPHeaders headers_with_auth = info.headers;
+        if (!params.bearer_token.empty()) {
+            headers_with_auth.Insert("Authorization", "Bearer " + params.bearer_token);
+        }
+
         int n = 0;
-        for (auto h : info.headers) {
+        for (auto h : headers_with_auth) {
             n++;
         }
 
         char **z = (char **)(void *)malloc(n * 4 * 2);
 
         int i = 0;
-        for (auto h : info.headers) {
+        for (auto h : headers_with_auth) {
             z[i] = (char *)malloc(h.first.size() * 4 + 1);
             memset(z[i], 0, h.first.size() * 4 + 1);
             memcpy(z[i], h.first.c_str(), h.first.size());
@@ -579,15 +601,21 @@ res->headers.Insert(head, tail);
             path = "https://" + path;
         }
 
+        // Create headers with bearer token if present
+        HTTPHeaders headers_with_auth = info.headers;
+        if (!params.bearer_token.empty()) {
+            headers_with_auth.Insert("Authorization", "Bearer " + params.bearer_token);
+        }
+
         int n = 0;
-        for (auto h : info.headers) {
+        for (auto h : headers_with_auth) {
             n++;
         }
 
         char **z = (char **)(void *)malloc(n * 4 * 2);
 
         int i = 0;
-        for (auto h : info.headers) {
+        for (auto h : headers_with_auth) {
             z[i] = (char *)malloc(h.first.size() * 4 + 1);
             memset(z[i], 0, h.first.size() * 4 + 1);
             memcpy(z[i], h.first.c_str(), h.first.size());
@@ -734,15 +762,21 @@ res->headers.Insert(head, tail);
             path = "https://" + path;
         }
 
+        // Create headers with bearer token if present
+        HTTPHeaders headers_with_auth = info.headers;
+        if (!params.bearer_token.empty()) {
+            headers_with_auth.Insert("Authorization", "Bearer " + params.bearer_token);
+        }
+
         int n = 0;
-        for (auto h : info.headers) {
+        for (auto h : headers_with_auth) {
             n++;
         }
 
         char **z = (char **)(void *)malloc(n * 4 * 2);
 
         int i = 0;
-        for (auto h : info.headers) {
+        for (auto h : headers_with_auth) {
             z[i] = (char *)malloc(h.first.size() * 4 + 1);
             memset(z[i], 0, h.first.size() * 4 + 1);
             memcpy(z[i], h.first.c_str(), h.first.size());

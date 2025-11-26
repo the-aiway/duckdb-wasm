@@ -84,6 +84,7 @@ export interface DuckDBFileInfo {
     reliableHeadRequests?: boolean;
     allowFullHttpReads?: boolean;
     forceFullHttpReads?: boolean;
+    bearerToken?: string;
     s3Config?: S3Config;
 }
 
@@ -93,6 +94,7 @@ export interface DuckDBGlobalFileInfo {
     reliableHeadRequests?: boolean;
     allowFullHttpReads?: boolean;
     forceFullHttpReads?: boolean;
+    bearerToken?: string;
     s3Config?: S3Config;
 }
 
