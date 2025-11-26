@@ -6,6 +6,11 @@ trap exit SIGINT
 
 PROJECT_ROOT="$(cd $(dirname "$BASH_SOURCE[0]") && cd .. && pwd)" &> /dev/null
 
+# Source local emsdk if it exists (for correct Emscripten version)
+if [ -f "${PROJECT_ROOT}/.emsdk/emsdk_env.sh" ]; then
+    source "${PROJECT_ROOT}/.emsdk/emsdk_env.sh" > /dev/null 2>&1
+fi
+
 MODE=${1:-Fast}
 FEATURES=${2:-mvp}
 DUCKDB_LOCATION=${3:-"$PROJECT_ROOT/submodules/duckdb"}
@@ -92,11 +97,22 @@ fi
 
 js-beautify -v || npm install -g js-beautify
 js-beautify ${BUILD_DIR}/duckdb_wasm.js > ${BUILD_DIR}/beauty.js
-sed 's/case \"__table_base\"/case \"getTempRet0\": return getTempRet0;   case \"__table_base\"/g' ${BUILD_DIR}/beauty.js > ${BUILD_DIR}/beauty_sed.js
-cp ${BUILD_DIR}/beauty_sed.js ${BUILD_DIR}/beauty.js
+
+# Inject getTempRet0 and setTempRet0 function definitions after stackAlloc
+if ! grep -q "var getTempRet0 = ()" ${BUILD_DIR}/beauty.js; then
+    awk '/var stackAlloc = Module\["stackAlloc"\]/ { 
+        print; 
+        print "            var tempRet0 = 0;"; 
+        print "            var getTempRet0 = () => tempRet0;"; 
+        print "            var setTempRet0 = (value) => { tempRet0 = value; };"; 
+        next 
+    }1' ${BUILD_DIR}/beauty.js > ${BUILD_DIR}/beauty_temp.js
+    mv ${BUILD_DIR}/beauty_temp.js ${BUILD_DIR}/beauty.js
+fi
+
 cp ${BUILD_DIR}/beauty.js ${BUILD_DIR}/duckdb_wasm.js
 awk '{gsub(/get\(stubs, prop\) \{/,"get(stubs,prop) { if (prop.startsWith(\"invoke_\")) {return createDyncallWrapper(prop.substring(7));}"); print}' ${BUILD_DIR}/beauty.js > ${BUILD_DIR}/beauty2.js
-awk '!(/var .*wasmExports\[/ || /var [_a-z0-9A-Z]+ = Module\[\"[_a-z0-9A-Z]+\"\] = [0-9]+;/) || /var _duckdb_web/ || /var _main/ || /var _calloc/ || /var _malloc/ || /var _free/ || /var stack/ || /var ___dl_seterr/ || /var __em/ || /var _em/ || /var _pthread/' ${BUILD_DIR}/beauty2.js > ${BUILD_DIR}/duckdb_wasm.js
+awk '!(/var .*wasmExports\[/ || /var [_a-z0-9A-Z]+ = Module\[\"[_a-z0-9A-Z]+\"\] = [0-9]+;/) || /var _duckdb_web/ || /var _main/ || /var _calloc/ || /var _malloc/ || /var _free/ || /var stack/ || /var ___dl_seterr/ || /var __em/ || /var _em/ || /var _pthread/ || /getTempRet0/ || /setTempRet0/' ${BUILD_DIR}/beauty2.js > ${BUILD_DIR}/duckdb_wasm.js
 
 cp ${BUILD_DIR}/duckdb_wasm.wasm ${DUCKDB_LIB_DIR}/duckdb${SUFFIX}.wasm
 sed \
