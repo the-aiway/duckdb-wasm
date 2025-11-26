@@ -29,7 +29,7 @@ HTTPHeaders TransformHeadersWasm(const HTTPHeaders &header_map, const HTTPParams
 
 class HTTPWasmClient : public HTTPClient {
    public:
-    HTTPWasmClient(HTTPFSParams &http_params, const string &proto_host_port) {
+    HTTPWasmClient(HTTPFSParams &http_params, const string &proto_host_port) : params(http_params) {
         host_port = proto_host_port;
         state = http_params.state;
     }
@@ -38,6 +38,7 @@ class HTTPWasmClient : public HTTPClient {
         state = http_params.state;
     }
     string host_port;
+    HTTPFSParams &params;
 
     unique_ptr<HTTPResponse> Get(GetRequestInfo &info) override {
         // clang-format off
@@ -60,14 +61,20 @@ class HTTPWasmClient : public HTTPClient {
         }
         auto headers = TransformHeadersWasm(info.headers, info.params);
 
+        // Create headers with bearer token if present
+        HTTPHeaders headers_with_auth = headers;
+        if (!params.bearer_token.empty()) {
+            headers_with_auth.Insert("Authorization", "Bearer " + params.bearer_token);
+        }
+
         int n = 0;
-        for (auto h : headers) {
+        for (auto h : headers_with_auth) {
             n++;
         }
         char **z = (char **)(void *)malloc(n * 4 * 2);
 
         int i = 0;
-        for (auto h : headers) {
+        for (auto h : headers_with_auth) {
             z[i] = (char *)malloc(h.first.size() * 4 + 1);
             memset(z[i], 0, h.first.size() * 4 + 1);
             memcpy(z[i], h.first.c_str(), h.first.size());
@@ -292,15 +299,22 @@ class HTTPWasmClient : public HTTPClient {
             path = "https://" + path;
         }
         auto headers = TransformHeadersWasm(info.headers, info.params);
+
+        // Create headers with bearer token if present
+        HTTPHeaders headers_with_auth = headers;
+        if (!params.bearer_token.empty()) {
+            headers_with_auth.Insert("Authorization", "Bearer " + params.bearer_token);
+        }
+
         int n = 0;
-        for (auto h : headers) {
+        for (auto h : headers_with_auth) {
             n++;
         }
 
         char **z = (char **)(void *)malloc(n * 4 * 2);
 
         int i = 0;
-        for (auto h : headers) {
+        for (auto h : headers_with_auth) {
             z[i] = (char *)malloc(h.first.size() * 4 + 1);
             memset(z[i], 0, h.first.size() * 4 + 1);
             memcpy(z[i], h.first.c_str(), h.first.size());
@@ -536,15 +550,22 @@ res->headers.Insert(head, tail);
             path = "https://" + path;
         }
         auto headers = TransformHeadersWasm(info.headers, info.params);
+
+        // Create headers with bearer token if present
+        HTTPHeaders headers_with_auth = headers;
+        if (!params.bearer_token.empty()) {
+            headers_with_auth.Insert("Authorization", "Bearer " + params.bearer_token);
+        }
+
         int n = 0;
-        for (auto h : headers) {
+        for (auto h : headers_with_auth) {
             n++;
         }
 
         char **z = (char **)(void *)malloc(n * 4 * 2);
 
         int i = 0;
-        for (auto h : headers) {
+        for (auto h : headers_with_auth) {
             z[i] = (char *)malloc(h.first.size() * 4 + 1);
             memset(z[i], 0, h.first.size() * 4 + 1);
             memcpy(z[i], h.first.c_str(), h.first.size());
@@ -692,15 +713,22 @@ res->headers.Insert(head, tail);
         }
 
         auto headers = TransformHeadersWasm(info.headers, info.params);
+
+        // Create headers with bearer token if present
+        HTTPHeaders headers_with_auth = headers;
+        if (!params.bearer_token.empty()) {
+            headers_with_auth.Insert("Authorization", "Bearer " + params.bearer_token);
+        }
+
         int n = 0;
-        for (auto h : headers) {
+        for (auto h : headers_with_auth) {
             n++;
         }
 
         char **z = (char **)(void *)malloc(n * 4 * 2);
 
         int i = 0;
-        for (auto h : headers) {
+        for (auto h : headers_with_auth) {
             z[i] = (char *)malloc(h.first.size() * 4 + 1);
             memset(z[i], 0, h.first.size() * 4 + 1);
             memcpy(z[i], h.first.c_str(), h.first.size());
@@ -848,15 +876,22 @@ res->headers.Insert(head, tail);
         }
 
         auto headers = TransformHeadersWasm(info.headers, info.params);
+
+        // Create headers with bearer token if present
+        HTTPHeaders headers_with_auth = headers;
+        if (!params.bearer_token.empty()) {
+            headers_with_auth.Insert("Authorization", "Bearer " + params.bearer_token);
+        }
+
         int n = 0;
-        for (auto h : headers) {
+        for (auto h : headers_with_auth) {
             n++;
         }
 
         char **z = (char **)(void *)malloc(n * 4 * 2);
 
         int i = 0;
-        for (auto h : headers) {
+        for (auto h : headers_with_auth) {
             z[i] = (char *)malloc(h.first.size() * 4 + 1);
             memset(z[i], 0, h.first.size() * 4 + 1);
             memcpy(z[i], h.first.c_str(), h.first.size());

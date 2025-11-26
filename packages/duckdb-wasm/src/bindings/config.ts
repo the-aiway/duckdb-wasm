@@ -88,6 +88,11 @@ export interface DuckDBConfig {
      */
     customUserAgent?: string;
     /**
+     * Authentication token for HTTP requests.
+     * Will be sent as "Authorization: Bearer <token>" header with all HTTP requests.
+     */
+    authToken?: string;
+    /**
      * opfs string
      */
     opfs?: DuckDBOPFSConfig;
