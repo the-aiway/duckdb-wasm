@@ -22,9 +22,6 @@
         "json",
         "csv"
     ],
-    "dependencies": {
-        "apache-arrow": "^17.0.0"
-    },
     "devDependencies": {
         "@types/emscripten": "^1.39.10",
         "@types/jasmine": "^5.1.4",
@@ -91,9 +88,9 @@
     "sideEffects": false,
     "browser": {
         "fs": false,
+        "os": false,
         "path": false,
         "perf_hooks": false,
-        "os": false,
         "worker_threads": false
     },
     "exports": {
