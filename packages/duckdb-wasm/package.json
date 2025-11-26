@@ -23,7 +23,6 @@
         "csv"
     ],
     "dependencies": {
-        "apache-arrow": "^17.0.0",
         "qs": "^6.14.1"
     },
     "devDependencies": {
@@ -92,9 +91,9 @@
     "sideEffects": false,
     "browser": {
         "fs": false,
+        "os": false,
         "path": false,
         "perf_hooks": false,
-        "os": false,
         "worker_threads": false
     },
     "exports": {
