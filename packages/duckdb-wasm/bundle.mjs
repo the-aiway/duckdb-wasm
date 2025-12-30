@@ -1,10 +1,29 @@
 import esbuild from 'esbuild';
-import fs, { writeFile } from 'fs';
+import fs, { writeFile, rmSync, mkdirSync } from 'fs';
 import path from 'path';
-import { rimrafSync } from 'rimraf';
-import mkdir from 'make-dir';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
+
+// Use fs.rmSync instead of rimraf to avoid dependency issues
+const rimrafSync = (path) => {
+    try {
+        rmSync(path, { recursive: true, force: true });
+    } catch (e) {
+        // Ignore errors
+    }
+};
+
+// Use fs.mkdirSync instead of make-dir to avoid dependency issues
+const mkdir = {
+    sync: (dir) => {
+        try {
+            mkdirSync(dir, { recursive: true });
+        } catch (e) {
+            // Ignore errors if directory already exists
+            if (e.code !== 'EEXIST') throw e;
+        }
+    }
+};
 
 // -------------------------------
 // Current bundling strategy
