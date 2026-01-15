@@ -1,20 +1,18 @@
 {
     "name": "aiway-duckdb-wasm",
     "version": "1.11.0",
-    "description": "DuckDB powered by WebAssembly",
-    "license": "MIT",
     "repository": {
         "type": "git",
         "url": "https://github.com/duckdb/duckdb-wasm.git"
     },
-    "private": false,
+    "private": true,
     "workspaces": [
         "packages/*",
         "examples/*"
     ],
-    "main": "./packages/duckdb-wasm/dist/duckdb-browser.cjs",
-    "module": "./packages/duckdb-wasm/dist/duckdb-browser.mjs",
-    "types": "./packages/duckdb-wasm/dist/duckdb-browser.d.ts",
+    "main": "packages/duckdb-wasm/dist/duckdb-browser.cjs",
+    "module": "packages/duckdb-wasm/dist/duckdb-browser.mjs",
+    "types": "packages/duckdb-wasm/src/targets/duckdb.ts",
     "exports": {
         "./dist/duckdb-mvp.wasm": "./packages/duckdb-wasm/dist/duckdb-mvp.wasm",
         "./dist/duckdb-eh.wasm": "./packages/duckdb-wasm/dist/duckdb-eh.wasm",
@@ -22,16 +20,16 @@
         "./dist/*": "./packages/duckdb-wasm/dist/*",
         ".": {
             "browser": {
-                "types": "./packages/duckdb-wasm/dist/duckdb-browser.d.ts",
+                "types": "./packages/duckdb-wasm/src/targets/duckdb.ts",
                 "import": "./packages/duckdb-wasm/dist/duckdb-browser.mjs",
                 "require": "./packages/duckdb-wasm/dist/duckdb-browser.cjs"
             },
             "node": {
-                "types": "./packages/duckdb-wasm/dist/duckdb-node.d.ts",
+                "types": "./packages/duckdb-wasm/src/targets/duckdb.ts",
                 "import": "./packages/duckdb-wasm/dist/duckdb-node.cjs",
                 "require": "./packages/duckdb-wasm/dist/duckdb-node.cjs"
             },
-            "types": "./packages/duckdb-wasm/dist/duckdb-browser.d.ts",
+            "types": "./packages/duckdb-wasm/src/targets/duckdb.ts",
             "import": "./packages/duckdb-wasm/dist/duckdb-browser.mjs",
             "require": "./packages/duckdb-wasm/dist/duckdb-browser.cjs"
         }
