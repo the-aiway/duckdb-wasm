@@ -15,7 +15,7 @@ endif()
 set(DUCKDB_CXX_FLAGS "${DUCKDB_CXX_FLAGS} -Wno-unqualified-std-cast-call -DDUCKDB_DEBUG_NO_SAFETY -DDUCKDB_FROM_DUCKDB_WASM")
 message("DUCKDB_CXX_FLAGS=${DUCKDB_CXX_FLAGS}")
 
-set(DUCKDB_EXTENSIONS "json;core_functions")
+set(DUCKDB_EXTENSIONS "json;core_functions;psql")
 # Escape semicolons in DUCKDB_EXTENSIONS before passing to ExternalProject_Add
 string(REPLACE ";" "$<SEMICOLON>" DUCKDB_EXTENSIONS_PACKED "${DUCKDB_EXTENSIONS}")
 
@@ -62,7 +62,8 @@ ExternalProject_Add(
     <INSTALL_DIR>/lib/libduckdb_fastpforlib.a
     <INSTALL_DIR>/lib/libparquet_extension.a
     <INSTALL_DIR>/lib/libcore_functions_extension.a
-    <INSTALL_DIR>/lib/libjson_extension.a)
+    <INSTALL_DIR>/lib/libjson_extension.a
+    <INSTALL_DIR>/lib/libpsql_extension.a)
 
 ExternalProject_Get_Property(duckdb_ep install_dir)
 ExternalProject_Get_Property(duckdb_ep binary_dir)
@@ -94,6 +95,8 @@ target_link_libraries(
   INTERFACE ${install_dir}/lib/libduckdb_utf8proc.a
   INTERFACE ${install_dir}/lib/libduckdb_fastpforlib.a
   INTERFACE ${install_dir}/lib/libcore_functions_extension.a
+  INTERFACE ${install_dir}/lib/libjson_extension.a
+  INTERFACE ${install_dir}/lib/libpsql_extension.a
   INTERFACE dl)
 
 target_include_directories(
@@ -121,6 +124,11 @@ add_library(duckdb_core_functions STATIC IMPORTED)
 set_property(TARGET duckdb_core_functions PROPERTY IMPORTED_LOCATION ${install_dir}/lib/libcore_functions_extension.a)
 target_include_directories(duckdb_core_functions INTERFACE ${DUCKDB_SOURCE_DIR}/extension/json/include)
 
+add_library(duckdb_psql STATIC IMPORTED)
+set_property(TARGET duckdb_psql PROPERTY IMPORTED_LOCATION ${install_dir}/lib/libpsql_extension.a)
+target_include_directories(duckdb_psql INTERFACE ${DUCKDB_SOURCE_DIR}/extension/psql/src/include)
+
 add_dependencies(duckdb duckdb_ep)
 add_dependencies(duckdb_parquet duckdb_ep)
 add_dependencies(duckdb_json duckdb_ep)
+add_dependencies(duckdb_psql duckdb_ep)
