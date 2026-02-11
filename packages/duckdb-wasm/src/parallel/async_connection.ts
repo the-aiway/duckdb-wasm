@@ -3,6 +3,12 @@ import { AsyncDuckDB } from './async_bindings';
 import { LogLevel, LogTopic, LogOrigin, LogEvent } from '../log';
 import { ArrowInsertOptions, CSVInsertOptions, JSONInsertOptions } from '../bindings/insert_options';
 
+/** Generate a unique query ID for tracking */
+let queryIdCounter = 0;
+function generateQueryId(): string {
+    return `q_${Date.now()}_${++queryIdCounter}`;
+}
+
 /** A thin helper to memoize the connection id */
 export class AsyncDuckDBConnection {
     /** The async duckdb */
@@ -32,6 +38,7 @@ export class AsyncDuckDBConnection {
 
     /** Run a query */
     public async query<T extends { [key: string]: arrow.DataType } = any>(text: string): Promise<arrow.Table<T>> {
+        const queryId = generateQueryId();
         this._bindings.logger.log({
             timestamp: new Date(),
             level: LogLevel.INFO,
@@ -39,12 +46,36 @@ export class AsyncDuckDBConnection {
             topic: LogTopic.QUERY,
             event: LogEvent.RUN,
             value: text,
+            id: queryId,
         });
-        const buffer = await this._bindings.runQuery(this._conn, text);
-        const reader = arrow.RecordBatchReader.from<T>(buffer);
-        console.assert(reader.isSync(), 'Reader is not sync');
-        console.assert(reader.isFile(), 'Reader is not file');
-        return new arrow.Table(reader as arrow.RecordBatchFileReader);
+        try {
+            const buffer = await this._bindings.runQuery(this._conn, text);
+            const reader = arrow.RecordBatchReader.from<T>(buffer);
+            console.assert(reader.isSync(), 'Reader is not sync');
+            console.assert(reader.isFile(), 'Reader is not file');
+            const table = new arrow.Table(reader as arrow.RecordBatchFileReader);
+            this._bindings.logger.log({
+                timestamp: new Date(),
+                level: LogLevel.INFO,
+                origin: LogOrigin.ASYNC_DUCKDB,
+                topic: LogTopic.QUERY,
+                event: LogEvent.OK,
+                value: undefined,
+                id: queryId,
+            });
+            return table;
+        } catch (e) {
+            this._bindings.logger.log({
+                timestamp: new Date(),
+                level: LogLevel.ERROR,
+                origin: LogOrigin.ASYNC_DUCKDB,
+                topic: LogTopic.QUERY,
+                event: LogEvent.ERROR,
+                value: String(e),
+                id: queryId,
+            });
+            throw e;
+        }
     }
 
     /** Send a query */
@@ -52,6 +83,7 @@ export class AsyncDuckDBConnection {
         text: string,
         allowStreamResult: boolean = false,
     ): Promise<arrow.AsyncRecordBatchStreamReader<T>> {
+        const queryId = generateQueryId();
         this._bindings.logger.log({
             timestamp: new Date(),
             level: LogLevel.INFO,
@@ -59,21 +91,54 @@ export class AsyncDuckDBConnection {
             topic: LogTopic.QUERY,
             event: LogEvent.RUN,
             value: text,
+            id: queryId,
         });
-        let header = await this._bindings.startPendingQuery(this._conn, text, allowStreamResult);
-        while (header == null) {
-            // Avoid infinite loop on detached state
-            if (this._bindings.isDetached()) {
-                console.error('cannot send a message since the worker is not set!');
-                return undefined as any;
+        try {
+            let header = await this._bindings.startPendingQuery(this._conn, text, allowStreamResult);
+            while (header == null) {
+                // Avoid infinite loop on detached state
+                if (this._bindings.isDetached()) {
+                    const err = 'cannot send a message since the worker is not set!';
+                    console.error(err);
+                    this._bindings.logger.log({
+                        timestamp: new Date(),
+                        level: LogLevel.ERROR,
+                        origin: LogOrigin.ASYNC_DUCKDB,
+                        topic: LogTopic.QUERY,
+                        event: LogEvent.ERROR,
+                        value: err,
+                        id: queryId,
+                    });
+                    return undefined as any;
+                }
+                header = await this._bindings.pollPendingQuery(this._conn);
             }
-            header = await this._bindings.pollPendingQuery(this._conn);
+            const iter = new AsyncResultStreamIterator(this._bindings, this._conn, header);
+            const reader = await arrow.RecordBatchReader.from<T>(iter);
+            console.assert(reader.isAsync());
+            console.assert(reader.isStream());
+            this._bindings.logger.log({
+                timestamp: new Date(),
+                level: LogLevel.INFO,
+                origin: LogOrigin.ASYNC_DUCKDB,
+                topic: LogTopic.QUERY,
+                event: LogEvent.OK,
+                value: undefined,
+                id: queryId,
+            });
+            return reader as unknown as arrow.AsyncRecordBatchStreamReader<T>; // XXX
+        } catch (e) {
+            this._bindings.logger.log({
+                timestamp: new Date(),
+                level: LogLevel.ERROR,
+                origin: LogOrigin.ASYNC_DUCKDB,
+                topic: LogTopic.QUERY,
+                event: LogEvent.ERROR,
+                value: String(e),
+                id: queryId,
+            });
+            throw e;
         }
-        const iter = new AsyncResultStreamIterator(this._bindings, this._conn, header);
-        const reader = await arrow.RecordBatchReader.from<T>(iter);
-        console.assert(reader.isAsync());
-        console.assert(reader.isStream());
-        return reader as unknown as arrow.AsyncRecordBatchStreamReader<T>; // XXX
     }
 
     /** Cancel a query that was sent earlier */
@@ -189,20 +254,85 @@ export class AsyncPreparedStatement<T extends { [key: string]: arrow.DataType } 
 
     /** Run a prepared statement */
     public async query(...params: any[]): Promise<arrow.Table<T>> {
-        const buffer = await this.bindings.runPrepared(this.connectionId, this.statementId, params);
-        const reader = arrow.RecordBatchReader.from<T>(buffer);
-        console.assert(reader.isSync());
-        console.assert(reader.isFile());
-        return new arrow.Table(reader as arrow.RecordBatchFileReader);
+        const queryId = generateQueryId();
+        this.bindings.logger.log({
+            timestamp: new Date(),
+            level: LogLevel.INFO,
+            origin: LogOrigin.ASYNC_DUCKDB,
+            topic: LogTopic.QUERY,
+            event: LogEvent.RUN,
+            value: `Prepared statement ${this.statementId}`,
+            id: queryId,
+        });
+        try {
+            const buffer = await this.bindings.runPrepared(this.connectionId, this.statementId, params);
+            const reader = arrow.RecordBatchReader.from<T>(buffer);
+            console.assert(reader.isSync());
+            console.assert(reader.isFile());
+            const table = new arrow.Table(reader as arrow.RecordBatchFileReader);
+            this.bindings.logger.log({
+                timestamp: new Date(),
+                level: LogLevel.INFO,
+                origin: LogOrigin.ASYNC_DUCKDB,
+                topic: LogTopic.QUERY,
+                event: LogEvent.OK,
+                value: undefined,
+                id: queryId,
+            });
+            return table;
+        } catch (e) {
+            this.bindings.logger.log({
+                timestamp: new Date(),
+                level: LogLevel.ERROR,
+                origin: LogOrigin.ASYNC_DUCKDB,
+                topic: LogTopic.QUERY,
+                event: LogEvent.ERROR,
+                value: String(e),
+                id: queryId,
+            });
+            throw e;
+        }
     }
 
     /** Send a prepared statement */
     public async send(...params: any[]): Promise<arrow.AsyncRecordBatchStreamReader<T>> {
-        const header = await this.bindings.sendPrepared(this.connectionId, this.statementId, params);
-        const iter = new AsyncResultStreamIterator(this.bindings, this.connectionId, header);
-        const reader = await arrow.RecordBatchReader.from<T>(iter);
-        console.assert(reader.isAsync());
-        console.assert(reader.isStream());
-        return reader as unknown as arrow.AsyncRecordBatchStreamReader<T>; // XXX
+        const queryId = generateQueryId();
+        this.bindings.logger.log({
+            timestamp: new Date(),
+            level: LogLevel.INFO,
+            origin: LogOrigin.ASYNC_DUCKDB,
+            topic: LogTopic.QUERY,
+            event: LogEvent.RUN,
+            value: `Prepared statement ${this.statementId}`,
+            id: queryId,
+        });
+        try {
+            const header = await this.bindings.sendPrepared(this.connectionId, this.statementId, params);
+            const iter = new AsyncResultStreamIterator(this.bindings, this.connectionId, header);
+            const reader = await arrow.RecordBatchReader.from<T>(iter);
+            console.assert(reader.isAsync());
+            console.assert(reader.isStream());
+            this.bindings.logger.log({
+                timestamp: new Date(),
+                level: LogLevel.INFO,
+                origin: LogOrigin.ASYNC_DUCKDB,
+                topic: LogTopic.QUERY,
+                event: LogEvent.OK,
+                value: undefined,
+                id: queryId,
+            });
+            return reader as unknown as arrow.AsyncRecordBatchStreamReader<T>; // XXX
+        } catch (e) {
+            this.bindings.logger.log({
+                timestamp: new Date(),
+                level: LogLevel.ERROR,
+                origin: LogOrigin.ASYNC_DUCKDB,
+                topic: LogTopic.QUERY,
+                event: LogEvent.ERROR,
+                value: String(e),
+                id: queryId,
+            });
+            throw e;
+        }
     }
 }
