@@ -39,6 +39,7 @@ export type LogEntry<O, T, E, V> = {
     readonly topic: T;
     readonly event: E;
     readonly value: V;
+    readonly id?: string;
 };
 
 export type ProgressEntry = {
@@ -62,7 +63,9 @@ export type LogEntryVariant =
     | LogEntry<LogOrigin.BINDINGS, LogTopic.OPEN, LogEvent.START, void>
     | LogEntry<LogOrigin.BINDINGS, LogTopic.OPEN, LogEvent.OK, void>
     | LogEntry<LogOrigin.BINDINGS, LogTopic.OPEN, LogEvent.ERROR, void>
-    | LogEntry<LogOrigin.ASYNC_DUCKDB, LogTopic.QUERY, LogEvent.RUN, string>;
+    | LogEntry<LogOrigin.ASYNC_DUCKDB, LogTopic.QUERY, LogEvent.RUN, string>
+    | LogEntry<LogOrigin.ASYNC_DUCKDB, LogTopic.QUERY, LogEvent.OK, void>
+    | LogEntry<LogOrigin.ASYNC_DUCKDB, LogTopic.QUERY, LogEvent.ERROR, string>;
 
 export interface Logger {
     log(entry: LogEntryVariant): void;
