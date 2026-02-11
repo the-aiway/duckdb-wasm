@@ -98,6 +98,7 @@
         "worker_threads": false
     },
     "exports": {
+        "./src/*": "./src/*",
         "./dist/duckdb-mvp.wasm": "./dist/duckdb-mvp.wasm",
         "./dist/duckdb-eh.wasm": "./dist/duckdb-eh.wasm",
         "./dist/duckdb-coi.wasm": "./dist/duckdb-coi.wasm",
@@ -115,6 +116,7 @@
         "./dist/duckdb-node-eh.worker.cjs": "./dist/duckdb-node-eh.worker.cjs",
         "./dist/duckdb-node-mvp.worker.cjs": "./dist/duckdb-node-mvp.worker.cjs",
         "./blocking": {
+            "bun": "./src/targets/duckdb-node-blocking.ts",
             "node": {
                 "types": "./dist/duckdb-node-blocking.d.ts",
                 "require": "./dist/duckdb-node-blocking.cjs",
@@ -125,6 +127,7 @@
             "require": "./dist/duckdb-node-blocking.cjs"
         },
         ".": {
+            "bun": "./src/index.ts",
             "browser": {
                 "types": "./dist/duckdb-browser.d.ts",
                 "import": "./dist/duckdb-browser.mjs",
