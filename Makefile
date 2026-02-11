@@ -32,6 +32,24 @@ JSON_EXTENSION_CACHE_FILE="${EXTENSION_CACHE_DIR}/json"
 cpp_lib: lib_tests
 
 # ---------------------------------------------------------------------------
+# Build
+
+.PHONY: build_wasm_mvp
+build_wasm_mvp:
+	USE_GENERATED_EXPORTED_LIST=no DUCKDB_PLATFORM=wasm_mvp ./scripts/wasm_build_lib.sh relsize mvp
+
+.PHONY: build_wasm_eh
+build_wasm_eh:
+	USE_GENERATED_EXPORTED_LIST=no DUCKDB_PLATFORM=wasm_eh ./scripts/wasm_build_lib.sh relsize eh
+
+.PHONY: build_wasm_coi
+build_wasm_coi:
+	USE_GENERATED_EXPORTED_LIST=no DUCKDB_PLATFORM=wasm_threads ./scripts/wasm_build_lib.sh relsize coi
+
+.PHONY: build_wasm_all
+build_wasm_all: build_wasm_mvp build_wasm_eh build_wasm_coi
+
+# ---------------------------------------------------------------------------
 # Formatting
 
 # Format all source files
