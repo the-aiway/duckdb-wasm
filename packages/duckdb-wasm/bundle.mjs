@@ -118,7 +118,7 @@ fs.copyFile(path.resolve(src, 'bindings', 'duckdb-coi.wasm'), path.resolve(dist,
         target: TARGET_BROWSER,
         bundle: true,
         minify: false,
-        sourcemap: is_debug ? 'inline' : true,
+        sourcemap: is_debug ? 'inline' : false,
         external: EXTERNALS_BROWSER,
         define: { 'process.release.name': '"browser"' },
     });
@@ -133,7 +133,7 @@ fs.copyFile(path.resolve(src, 'bindings', 'duckdb-coi.wasm'), path.resolve(dist,
         target: TARGET_BROWSER,
         bundle: true,
         minify: false,
-        sourcemap: is_debug ? 'inline' : true,
+        sourcemap: is_debug ? 'inline' : false,
         external: EXTERNALS_BROWSER,
         define: { 'process.release.name': '"browser"' },
     });
@@ -147,7 +147,7 @@ fs.copyFile(path.resolve(src, 'bindings', 'duckdb-coi.wasm'), path.resolve(dist,
         target: TARGET_BROWSER,
         bundle: true,
         minify: false,
-        sourcemap: is_debug ? 'inline' : true,
+        sourcemap: is_debug ? 'inline' : false,
         external: EXTERNALS_BROWSER,
         define: {
             'process.release.name': '"browser"',
@@ -164,7 +164,7 @@ fs.copyFile(path.resolve(src, 'bindings', 'duckdb-coi.wasm'), path.resolve(dist,
         target: TARGET_BROWSER,
         bundle: true,
         minify: false,
-        sourcemap: is_debug ? 'inline' : true,
+        sourcemap: is_debug ? 'inline' : false,
         external: EXTERNALS_BROWSER,
         define: {
             'process.release.name': '"browser"',
@@ -182,7 +182,7 @@ fs.copyFile(path.resolve(src, 'bindings', 'duckdb-coi.wasm'), path.resolve(dist,
         target: TARGET_BROWSER,
         bundle: true,
         minify: false,
-        sourcemap: is_debug ? 'inline' : true,
+        sourcemap: is_debug ? 'inline' : false,
         external: EXTERNALS_WEBWORKER,
         define: { 'process.release.name': '"browser"' },
     });
@@ -197,7 +197,7 @@ fs.copyFile(path.resolve(src, 'bindings', 'duckdb-coi.wasm'), path.resolve(dist,
         target: TARGET_BROWSER,
         bundle: true,
         minify: false,
-        sourcemap: is_debug ? 'inline' : true,
+        sourcemap: is_debug ? 'inline' : false,
         external: EXTERNALS_WEBWORKER,
         define: { 'process.release.name': '"browser"' },
     });
@@ -212,7 +212,7 @@ fs.copyFile(path.resolve(src, 'bindings', 'duckdb-coi.wasm'), path.resolve(dist,
         target: TARGET_BROWSER,
         bundle: true,
         minify: false,
-        sourcemap: is_debug ? 'inline' : true,
+        sourcemap: is_debug ? 'inline' : false,
         external: EXTERNALS_WEBWORKER,
         define: { 'process.release.name': '"browser"' },
     });
@@ -226,7 +226,7 @@ fs.copyFile(path.resolve(src, 'bindings', 'duckdb-coi.wasm'), path.resolve(dist,
         target: TARGET_BROWSER,
         bundle: true,
         minify: false,
-        sourcemap: is_debug ? 'inline' : true,
+        sourcemap: is_debug ? 'inline' : false,
         external: EXTERNALS_WEBWORKER,
         define: { 'process.release.name': '"browser"' },
     });
@@ -244,7 +244,7 @@ fs.copyFile(path.resolve(src, 'bindings', 'duckdb-coi.wasm'), path.resolve(dist,
         target: TARGET_NODE,
         bundle: true,
         minify: false,
-        sourcemap: is_debug ? 'inline' : true,
+        sourcemap: is_debug ? 'inline' : false,
         external: EXTERNALS_NODE,
     });
 
@@ -257,7 +257,7 @@ fs.copyFile(path.resolve(src, 'bindings', 'duckdb-coi.wasm'), path.resolve(dist,
         target: TARGET_NODE,
         bundle: true,
         minify: false,
-        sourcemap: is_debug ? 'inline' : true,
+        sourcemap: is_debug ? 'inline' : false,
         external: EXTERNALS_NODE,
     });
 
@@ -270,7 +270,7 @@ fs.copyFile(path.resolve(src, 'bindings', 'duckdb-coi.wasm'), path.resolve(dist,
         target: TARGET_NODE,
         bundle: true,
         minify: false,
-        sourcemap: is_debug ? 'inline' : true,
+        sourcemap: is_debug ? 'inline' : false,
         external: EXTERNALS_NODE,
     });
 
@@ -283,7 +283,7 @@ fs.copyFile(path.resolve(src, 'bindings', 'duckdb-coi.wasm'), path.resolve(dist,
         target: TARGET_NODE,
         bundle: true,
         minify: false,
-        sourcemap: is_debug ? 'inline' : true,
+        sourcemap: is_debug ? 'inline' : false,
         external: EXTERNALS_NODE,
     });
 
@@ -299,7 +299,7 @@ fs.copyFile(path.resolve(src, 'bindings', 'duckdb-coi.wasm'), path.resolve(dist,
         globalName: 'duckdb',
         target: TARGET_BROWSER_TEST,
         bundle: true,
-        sourcemap: is_debug ? 'inline' : true,
+        sourcemap: is_debug ? 'inline' : false,
         external: EXTERNALS_TEST_BROWSER,
     });
 
@@ -312,34 +312,35 @@ fs.copyFile(path.resolve(src, 'bindings', 'duckdb-coi.wasm'), path.resolve(dist,
         target: TARGET_NODE,
         bundle: true,
         minify: false,
-        sourcemap: is_debug ? 'inline' : true,
+        sourcemap: is_debug ? 'inline' : false,
         // web-worker polyfill needs to be excluded from bundling due to their dynamic require messing with bundled modules
         external: [...EXTERNALS_NODE, 'web-worker'],
     });
 
     // -------------------------------
     // Write declaration files
+    // Reference source directory directly since src/* is exported in package.json
 
     // Browser declarations
     await fs.promises.writeFile(
         path.join(dist, 'duckdb-browser.d.ts'),
-        "export * from './types/src/targets/duckdb';",
+        "export * from '../src/targets/duckdb';",
         printErr,
     );
     await fs.promises.writeFile(
         path.join(dist, 'duckdb-browser-blocking.d.ts'),
-        "export * from './types/src/targets/duckdb-browser-blocking';",
+        "export * from '../src/targets/duckdb-browser-blocking';",
     );
 
     // Node declarations
     await fs.promises.writeFile(
         path.join(dist, 'duckdb-node.d.ts'),
-        "export * from './types/src/targets/duckdb';",
+        "export * from '../src/targets/duckdb';",
         printErr,
     );
     await fs.promises.writeFile(
         path.join(dist, 'duckdb-node-blocking.d.ts'),
-        "export * from './types/src/targets/duckdb-node-blocking';",
+        "export * from '../src/targets/duckdb-node-blocking';",
     );
 
     // -------------------------------

@@ -60,8 +60,8 @@
         "web-worker": "^1.2.0"
     },
     "scripts": {
-        "build:debug": "node bundle.mjs debug && tsc --emitDeclarationOnly",
-        "build:release": "node bundle.mjs release && tsc --emitDeclarationOnly",
+        "build:debug": "node bundle.mjs debug",
+        "build:release": "node bundle.mjs release",
         "docs": "typedoc",
         "format": "prettier --write \"**/*.+(js|ts)\"",
         "report": "node ./coverage.mjs",
