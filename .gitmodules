@@ -32,3 +32,7 @@
 	url = https://github.com/gregrahn/tpch-kit.git
 	ignore = dirty
 	shallow = true
+[submodule "submodules/spatial"]
+	path = submodules/spatial
+	url = https://github.com/duckdblabs/duckdb_spatial
+	update = rebase

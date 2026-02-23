@@ -63,7 +63,8 @@ ExternalProject_Add(
     <INSTALL_DIR>/lib/libparquet_extension.a
     <INSTALL_DIR>/lib/libcore_functions_extension.a
     <INSTALL_DIR>/lib/libjson_extension.a
-    <INSTALL_DIR>/lib/libpsql_extension.a)
+    <INSTALL_DIR>/lib/libpsql_extension.a
+    <INSTALL_DIR>/lib/libspatial_extension.a)
 
 ExternalProject_Get_Property(duckdb_ep install_dir)
 ExternalProject_Get_Property(duckdb_ep binary_dir)
@@ -97,6 +98,7 @@ target_link_libraries(
   INTERFACE ${install_dir}/lib/libcore_functions_extension.a
   INTERFACE ${install_dir}/lib/libjson_extension.a
   INTERFACE ${install_dir}/lib/libpsql_extension.a
+  INTERFACE ${install_dir}/lib/libspatial_extension.a
   INTERFACE dl)
 
 target_include_directories(
@@ -128,7 +130,12 @@ add_library(duckdb_psql STATIC IMPORTED)
 set_property(TARGET duckdb_psql PROPERTY IMPORTED_LOCATION ${install_dir}/lib/libpsql_extension.a)
 target_include_directories(duckdb_psql INTERFACE ${DUCKDB_SOURCE_DIR}/extension/psql/src/include)
 
+add_library(duckdb_spatial STATIC IMPORTED)
+set_property(TARGET duckdb_spatial PROPERTY IMPORTED_LOCATION ${install_dir}/lib/libspatial_extension.a)
+target_include_directories(duckdb_spatial INTERFACE ${DUCKDB_SOURCE_DIR}/../spatial/src/include)
+
 add_dependencies(duckdb duckdb_ep)
 add_dependencies(duckdb_parquet duckdb_ep)
 add_dependencies(duckdb_json duckdb_ep)
 add_dependencies(duckdb_psql duckdb_ep)
+add_dependencies(duckdb_spatial duckdb_ep)
