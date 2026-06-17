@@ -92,14 +92,10 @@ Extension sizes will vary depending, among other things, on provided functionali
 
 ## Build from source
 
-```shell
-git clone https://github.com/duckdb/duckdb-wasm.git
-cd duckdb-wasm
-git submodule init
-git submodule update
-make apply_patches
-make serve
-```
+This fork builds with a native Emscripten toolchain (the upstream `duckdb/wasm-ci`
+Docker image is unavailable). See [CONTRIBUTING.md](CONTRIBUTING.md) for the full
+local setup — Emscripten into `./.emsdk`, `cmake`/`ccache`, submodules, patches,
+and `make wasm`.
 
 ## Repository Structure
 
