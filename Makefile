@@ -65,7 +65,10 @@ check_format:
 # Building
 .PHONY: set_environment
 set_environment:
-	command -v emcc &> /dev/null && EXEC_ENVIRONMENT="" && echo '\033[1m=== Using native mode ===\033[0m' && echo 'Emscripten from' && which emcc || (EXEC_ENVIRONMENT=echo ${DOCKER_EXEC_ENVIRONMENT} && echo '\033[1m === Using docker environment === \033[0m')
+	@if [ -f ${ROOT_DIR}/.emsdk/emsdk_env.sh ]; then . ${ROOT_DIR}/.emsdk/emsdk_env.sh > /dev/null 2>&1; fi; \
+	command -v emcc > /dev/null 2>&1 \
+		&& echo '\033[1m=== Using native mode ===\033[0m' && echo 'Emscripten from' && which emcc \
+		|| (echo '\033[1m=== emcc not found; install Emscripten into ./.emsdk (see README) — trying docker fallback ===\033[0m' && ${DOCKER_EXEC_ENVIRONMENT})
 
 build/data:
 	${ROOT_DIR}/scripts/generate_uni.sh
@@ -458,9 +461,11 @@ patch_duckdb:
 
 apply_patches: patch_duckdb
 
+# NOTE: must be .PHONY — the target name collides with the submodules/ directory,
+# so without this make always considers it "up to date" and never runs the init.
+.PHONY: submodules
 submodules:
 	git submodule update --init --recursive
-	touch submodules
 
 # Build infrastructure and packages required for development
 build/bootstrap: submodules yarn_install

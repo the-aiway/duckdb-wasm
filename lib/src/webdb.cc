@@ -975,7 +975,8 @@ arrow::Status WebDB::Open(std::string_view args_json) {
         db_config.options.maximum_threads = config_->maximum_threads;
         // Set external_threads to match maximum_threads for WASM environment
         // This ensures all threads are available for external operations (HTTP, IO, etc.)
-        db_config.options.external_threads = config_->maximum_threads;
+        // Since DuckDB v1.5, external_threads is a named setting rather than a DBConfigOptions member.
+        db_config.SetOptionByName("external_threads", duckdb::Value::UBIGINT(config_->maximum_threads));
         db_config.options.use_temporary_directory = false;
         db_config.options.access_mode = access_mode;
         db_config.SetOptionByName("duckdb_api", "wasm");
