@@ -13,15 +13,21 @@ Linux is analogous.
 ### 1. Emscripten (into `./.emsdk`)
 
 The build (`scripts/wasm_build_lib.sh`) and `set_environment` auto-source
-`./.emsdk/emsdk_env.sh`, so install the SDK there. Use the version CI uses:
+`./.emsdk/emsdk_env.sh`, so install the SDK there. **Two versions are required**
+(matching CI): `3.1.71` for the `mvp`/`eh` variants and `3.1.57` for `coi`.
 
 ```bash
 git clone https://github.com/emscripten-core/emsdk.git .emsdk
-cd .emsdk && ./emsdk install 3.1.71 && ./emsdk activate 3.1.71 && cd ..
+cd .emsdk
+./emsdk install 3.1.71 && ./emsdk activate 3.1.71
+./emsdk install 3.1.57                 # the coi variant must use this (see step 5)
+cd ..
 ```
 
-(`.emsdk` is gitignored. CI uses `3.1.71`, and `3.1.57` specifically for the
-`coi` variant; `3.1.71` builds all three locally.)
+(`.emsdk` is gitignored.) The `coi` variant **must** be built with `3.1.57`:
+Emscripten ≥ 3.1.68 no longer emits the separate pthread `*.worker.js` that
+`bundle.mjs` turns into `duckdb-coi.pthread.js`, so building `coi` with `3.1.71`
+yields a `.wasm` but then breaks `make js_release`.
 
 ### 2. Host tools
 
@@ -55,10 +61,26 @@ trees. These must be re-checked whenever the duckdb submodule is bumped.
 
 ### 5. Build
 
+`make wasm` builds all three variants with whichever Emscripten is *active*, so
+build `coi` separately with `3.1.57`:
+
 ```bash
-make wasm           # all 3 variants (relperf); see Makefile for wasm_dev / wasm_debug / wasm_relsize
-make js_debug       # then the TypeScript bundle (or js_release)
+# mvp + eh + (a throwaway coi) with 3.1.71
+(cd .emsdk && ./emsdk activate 3.1.71); . ./.emsdk/emsdk_env.sh >/dev/null
+make wasm                 # see Makefile for wasm_dev / wasm_debug / wasm_relsize
+
+# rebuild coi with 3.1.57 so its pthread worker is emitted
+(cd .emsdk && ./emsdk activate 3.1.57); . ./.emsdk/emsdk_env.sh >/dev/null
+./scripts/wasm_build_lib.sh relperf coi
+
+# bundle the TypeScript and (re)generate dist (.cjs/.mjs/.d.ts + wasm .br/.zst)
+make js_release           # or js_debug
 ```
+
+The toolchain is pinned in `package.json` for reproducible declaration
+emit: `typescript ~5.6.3` (5.7 split `ArrayBuffer`/`SharedArrayBuffer`) and
+`@types/emscripten 1.39.10` via root `resolutions` (later releases dropped the
+`Emscripten.WebAssemblyExports` type the bindings use).
 
 ## Notes
 
