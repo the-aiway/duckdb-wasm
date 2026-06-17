@@ -173,7 +173,7 @@
 "@duckdb/duckdb-wasm-shell@file:packages/duckdb-wasm-shell":
   version "1.11.0"
   dependencies:
-    "@duckdb/duckdb-wasm" "file:../../Library/Caches/Yarn/v6/npm-@duckdb-duckdb-wasm-shell-1.11.0-e7d1a301-03ac-4e59-832e-8cf6942c3410-1781705480806/node_modules/@duckdb/duckdb-wasm"
+    "@duckdb/duckdb-wasm" "file:../../Library/Caches/Yarn/v6/npm-@duckdb-duckdb-wasm-shell-1.11.0-cd5973a9-e0d4-42c9-8313-948a97882bf9-1781725678163/node_modules/@duckdb/duckdb-wasm"
     qs "^6.14.1"
     xterm "^5.3.0"
     xterm-addon-fit "^0.8.0"
@@ -988,10 +988,10 @@
   dependencies:
     "@types/node" "*"
 
-"@types/emscripten@*", "@types/emscripten@^1.39.10":
-  version "1.41.5"
-  resolved "https://registry.yarnpkg.com/@types/emscripten/-/emscripten-1.41.5.tgz#5670e4b52b098691cb844b84ee48c9176699b68d"
-  integrity sha512-cMQm7pxu6BxtHyqJ7mQZ2kXWV5SLmugybFdHCBbJ5eHzOo6VhBckEgAT3//rP5FwPHNPeEiq4SmQ5ucBwsOo4Q==
+"@types/emscripten@*", "@types/emscripten@1.39.10":
+  version "1.39.10"
+  resolved "https://registry.yarnpkg.com/@types/emscripten/-/emscripten-1.39.10.tgz#da6e58a6171b46a41d3694f812d845d515c77e18"
+  integrity sha512-TB/6hBkYQJxsZHSqyeuO1Jt0AB/bW6G7rHt9g7lML7SOF6lbgcHvw/Lr+69iqN0qxgXLhWKScAon73JNnptuDw==
 
 "@types/estree@^1.0.8":
   version "1.0.9"
@@ -7752,6 +7752,11 @@ typescript@^5.3.3:
   version "5.9.3"
   resolved "https://registry.yarnpkg.com/typescript/-/typescript-5.9.3.tgz#5b4f59e15310ab17a216f5d6cf53ee476ede670f"
   integrity sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==
+
+typescript@~5.6.3:
+  version "5.6.3"
+  resolved "https://registry.yarnpkg.com/typescript/-/typescript-5.6.3.tgz#5f3449e31c9d94febb17de03cc081dd56d81db5b"
+  integrity sha512-hjcS1mhfuyi4WW8IWtjP7brDrG2cuDZukyrYrSauoXGNgx0S7zceP07adYkJycEr56BOUTNPzbInooiN3fn1qw==
 
 typical@^2.6.1:
   version "2.6.1"

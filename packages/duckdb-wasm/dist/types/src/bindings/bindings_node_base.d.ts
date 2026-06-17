@@ -16,7 +16,7 @@ export declare class DuckDBNodeBindings extends DuckDBBindingsBase {
     /** Locate a file */
     protected locateFile(path: string, prefix: string): string;
     /** Instantiate the wasm module */
-    protected instantiateWasm(imports: any, success: (instance: WebAssembly.Instance, module: WebAssembly.Module) => void): any;
+    protected instantiateWasm(imports: any, success: (instance: WebAssembly.Instance, module: WebAssembly.Module) => void): Emscripten.WebAssemblyExports;
     /** Instantiate the bindings */
     protected instantiateImpl(moduleOverrides: Partial<DuckDBModule>): Promise<DuckDBModule>;
 }

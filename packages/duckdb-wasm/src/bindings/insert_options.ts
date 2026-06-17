@@ -1,4 +1,4 @@
-import { SQLField } from '../sql_types';
+import { SQLField } from '../json_typedef';
 
 export enum JSONTableShape {
     ROW_ARRAY = 'row-array',

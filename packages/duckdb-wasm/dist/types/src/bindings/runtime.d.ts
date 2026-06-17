@@ -1,4 +1,3 @@
-/// <reference types="emscripten" />
 import { DuckDBModule } from './duckdb_module';
 import { UDFFunction } from './udf_function';
 /** Helper to decode text */

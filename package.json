@@ -43,5 +43,8 @@
     },
     "devDependencies": {
         "badge-maker": "^3.3.1"
+    },
+    "resolutions": {
+        "@types/emscripten": "1.39.10"
     }
 }

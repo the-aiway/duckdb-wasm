@@ -1,6 +1,7 @@
 import esbuild from 'esbuild';
 import fs, { writeFile, rmSync, mkdirSync } from 'fs';
 import path from 'path';
+import zlib from 'zlib';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 
@@ -113,9 +114,37 @@ rimrafSync(`${dist}/*.cjs.map`);
 // Copy WASM files
 
 const src = path.resolve(__dirname, 'src');
-fs.copyFile(path.resolve(src, 'bindings', 'duckdb-mvp.wasm'), path.resolve(dist, 'duckdb-mvp.wasm'), printErr);
-fs.copyFile(path.resolve(src, 'bindings', 'duckdb-eh.wasm'), path.resolve(dist, 'duckdb-eh.wasm'), printErr);
-fs.copyFile(path.resolve(src, 'bindings', 'duckdb-coi.wasm'), path.resolve(dist, 'duckdb-coi.wasm'), printErr);
+
+// Copy each WASM module to dist and (re)generate its brotli/zstd variants.
+// Done synchronously so the compressed files always match the copied wasm.
+// Uses Node's built-in zlib (brotli + zstd, the latter needs Node >= 22.15) so
+// no external CLI/dependency is required.
+const WASM_MODULES = ['duckdb-mvp.wasm', 'duckdb-eh.wasm', 'duckdb-coi.wasm'];
+const hasZstd = typeof zlib.zstdCompressSync === 'function';
+for (const name of WASM_MODULES) {
+    const wasm = fs.readFileSync(path.resolve(src, 'bindings', name));
+    const distPath = path.resolve(dist, name);
+    fs.writeFileSync(distPath, wasm);
+    fs.writeFileSync(
+        `${distPath}.br`,
+        zlib.brotliCompressSync(wasm, {
+            params: {
+                [zlib.constants.BROTLI_PARAM_QUALITY]: zlib.constants.BROTLI_MAX_QUALITY,
+                [zlib.constants.BROTLI_PARAM_SIZE_HINT]: wasm.length,
+            },
+        }),
+    );
+    if (hasZstd) {
+        fs.writeFileSync(
+            `${distPath}.zst`,
+            zlib.zstdCompressSync(wasm, { params: { [zlib.constants.ZSTD_c_compressionLevel]: 19 } }),
+        );
+    }
+    console.log(`wasm: ${name} (+ .br${hasZstd ? ' + .zst' : ''})`);
+}
+if (!hasZstd) {
+    console.warn('zstd compression skipped: Node >= 22.15 is required for zlib.zstdCompressSync');
+}
 
 (async () => {
     // Don't attempt to bundle NodeJS modules in the browser build.
