@@ -82,6 +82,30 @@ emit: `typescript ~5.6.3` (5.7 split `ArrayBuffer`/`SharedArrayBuffer`) and
 `@types/emscripten 1.39.10` via root `resolutions` (later releases dropped the
 `Emscripten.WebAssemblyExports` type the bindings use).
 
+## Syncing with upstream (maintainers)
+
+This is a fork. `origin` is the working fork; `origin-fork` is upstream
+(`duckdb/duckdb-wasm`). To pull in upstream changes:
+
+1. `git fetch origin-fork`
+2. `git rebase origin-fork/main` — the fork carries a handful of customization
+   commits (UDF removed, `apache-arrow` made external, custom esbuild
+   `bundle.mjs`, HTTP auth token, etc.). Resolve conflicts by layering the
+   fork's intent on top of upstream's newer code.
+3. Rebuild the wasm (steps 1–5 above) — `mvp`/`eh` with emscripten `3.1.71`,
+   `coi` with `3.1.57`.
+4. `make js_release` and **commit the regenerated `dist/`** (it is committed and
+   consumed directly from git — see below).
+5. `git push --force-with-lease origin main` (the rebase rewrites history).
+
+After a DuckDB submodule bump, expect to fix the C++ glue in `lib/` against the
+new API (e.g. `external_threads` moved from a `DBConfigOptions` member to a
+named setting in v1.5 — set it with `db_config.SetOptionByName(...)`).
+
+`dist/` (`packages/duckdb-wasm/dist/`) is **tracked in git** and has no
+build-on-install hook, so the fork ships its prebuilt bundle directly. Always
+regenerate and commit it after changing wasm or TypeScript.
+
 ## Notes
 
 - DuckDB is currently pinned to v1.5.4 (`submodules/duckdb`).
