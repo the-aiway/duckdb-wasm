@@ -173,7 +173,7 @@
 "@duckdb/duckdb-wasm-shell@file:packages/duckdb-wasm-shell":
   version "1.11.0"
   dependencies:
-    "@duckdb/duckdb-wasm" "file:../../Library/Caches/Yarn/v6/npm-@duckdb-duckdb-wasm-shell-1.11.0-cd5973a9-e0d4-42c9-8313-948a97882bf9-1781725678163/node_modules/@duckdb/duckdb-wasm"
+    "@duckdb/duckdb-wasm" "file:packages/duckdb-wasm"
     qs "^6.14.1"
     xterm "^5.3.0"
     xterm-addon-fit "^0.8.0"
@@ -5168,7 +5168,7 @@ kuler@^2.0.0:
   resolved "https://registry.yarnpkg.com/kuler/-/kuler-2.0.0.tgz#e2c570a3800388fb44407e851531c1d670b061b3"
   integrity sha512-Xq9nH7KlWZmXAtodXDDRE7vs6DU1gTU8zYDHDiWLSip45Egwq3plLHzPn27NgvzL2r1LMPC1vdqh98sQxtqj4A==
 
-launch-editor@^2.6.1:
+launch-editor@^2.14.1:
   version "2.14.1"
   resolved "https://registry.yarnpkg.com/launch-editor/-/launch-editor-2.14.1.tgz#f7e0da3f58aaea03fea01074d840b5f739ed7ddc"
   integrity sha512-QWBrQsMpH7gPr965dsKD/3cKWiNoTjpATQf++Xq63N6sKRGMwlVXz41O1IZTMfZQgBctD/K5Zt06+/I6pP6+HA==
@@ -8019,10 +8019,10 @@ webpack-dev-middleware@^7.4.2:
     range-parser "^1.2.1"
     schema-utils "^4.0.0"
 
-webpack-dev-server@^5.2.2:
-  version "5.2.5"
-  resolved "https://registry.yarnpkg.com/webpack-dev-server/-/webpack-dev-server-5.2.5.tgz#648fceaac6a5736b0935e5c1e55d6aa1d0626119"
-  integrity sha512-4wZtCquSuv9CKX8oybo+mqxtxZqWz47uM1Ch94lxowBztOhWCbhqvRbfC/mODOwxgV2brY+JGZpHq58/SuVFYg==
+webpack-dev-server@^5.2.6:
+  version "5.2.6"
+  resolved "https://registry.yarnpkg.com/webpack-dev-server/-/webpack-dev-server-5.2.6.tgz#3a5d41233cbb7504f814d19e59a59173fb8ae23d"
+  integrity sha512-HNLRmamRvVavZQ+avceZifmv8hmdUjg43t6MI4SqJDwFdW7RPQwH5vzGhDRZSX59SgfbeHhLnq3g+uooWo7pVw==
   dependencies:
     "@types/bonjour" "^3.5.13"
     "@types/connect-history-api-fallback" "^1.5.4"
@@ -8042,7 +8042,7 @@ webpack-dev-server@^5.2.2:
     graceful-fs "^4.2.6"
     http-proxy-middleware "^2.0.9"
     ipaddr.js "^2.1.0"
-    launch-editor "^2.6.1"
+    launch-editor "^2.14.1"
     open "^10.0.3"
     p-retry "^6.2.0"
     schema-utils "^4.2.0"
