@@ -173,7 +173,7 @@
 "@duckdb/duckdb-wasm-shell@file:packages/duckdb-wasm-shell":
   version "1.11.0"
   dependencies:
-    "@duckdb/duckdb-wasm" "file:../../Library/Caches/Yarn/v6/npm-@duckdb-duckdb-wasm-shell-1.11.0-cd5973a9-e0d4-42c9-8313-948a97882bf9-1781725678163/node_modules/@duckdb/duckdb-wasm"
+    "@duckdb/duckdb-wasm" "file:packages/duckdb-wasm"
     qs "^6.14.1"
     xterm "^5.3.0"
     xterm-addon-fit "^0.8.0"
@@ -4452,9 +4452,9 @@ invariant@^2.2.4:
     loose-envify "^1.0.0"
 
 ip-address@^10.1.1:
-  version "10.2.0"
-  resolved "https://registry.yarnpkg.com/ip-address/-/ip-address-10.2.0.tgz#805fc178b20c518bd4c8548b24fe30892d7f3206"
-  integrity sha512-/+S6j4E9AHvW9SWMSEY9Xfy66O5PWvVEJ08O0y5JGyEKQpojb0K0GKpz/v5HJ/G0vi3D2sjGK78119oXZeE0qA==
+  version "10.4.0"
+  resolved "https://registry.yarnpkg.com/ip-address/-/ip-address-10.4.0.tgz#c5910bc541b6eae287765d1e4846be0308a05d93"
+  integrity sha512-oSK96Grm3aP6OrS263xVxbNDGVL7rzBtYdpGqlDG8iQdoenDoTs/nkki+DflYbAEE8Xl6o5YxhxlrKvI3nqKXQ==
 
 ipaddr.js@1.9.1:
   version "1.9.1"
