@@ -85,18 +85,57 @@ emit: `typescript ~5.6.3` (5.7 split `ArrayBuffer`/`SharedArrayBuffer`) and
 ## Syncing with upstream (maintainers)
 
 This is a fork. `origin` is the working fork; `origin-fork` is upstream
-(`duckdb/duckdb-wasm`). To pull in upstream changes:
+(`duckdb/duckdb-wasm`).
+
+> **`main` is protected — the old rebase-and-force-push sync no longer works.**
+> A repository ruleset on the default branch requires every change to arrive
+> through a pull request with one approving review, and rejects non-fast-forward
+> pushes. There is no bypass actor. So a sync can no longer rewrite `main`:
+> merge upstream into a branch, then open a PR. See the note at the end of this
+> section for why.
+
+To pull in upstream changes:
 
 1. `git fetch origin-fork`
-2. `git rebase origin-fork/main` — the fork carries a handful of customization
-   commits (UDF removed, `apache-arrow` made external, custom esbuild
-   `bundle.mjs`, HTTP auth token, etc.). Resolve conflicts by layering the
-   fork's intent on top of upstream's newer code.
-3. Rebuild the wasm (steps 1–5 above) — `mvp`/`eh` with emscripten `3.1.71`,
+2. Branch off `main`:
+   ```bash
+   git switch main && git pull
+   git switch -c sync/upstream-$(date +%Y-%m-%d)
+   ```
+3. `git merge origin-fork/main` — **merge, do not rebase.** A rebase rewrites the
+   fork's own commits and could only reach `main` through a force-push, which the
+   ruleset rejects. The fork carries a handful of customization commits (UDF
+   removed, `apache-arrow` made external, custom esbuild `bundle.mjs`, HTTP auth
+   token, etc.). Resolve conflicts by layering the fork's intent on top of
+   upstream's newer code, exactly as before.
+4. Rebuild the wasm (steps 1–5 above) — `mvp`/`eh` with emscripten `3.1.71`,
    `coi` with `3.1.57`.
-4. `make js_release` and **commit the regenerated `dist/`** (it is committed and
+5. `make js_release` and **commit the regenerated `dist/`** (it is committed and
    consumed directly from git — see below).
-5. `git push --force-with-lease origin main` (the rebase rewrites history).
+6. Push the branch and open the PR:
+   ```bash
+   git push -u origin HEAD
+   gh pr create --base main --fill
+   ```
+7. Get one approval, then merge. **Prefer a merge commit** — squashing collapses
+   the whole upstream range into one opaque commit and loses the upstream history
+   the fork is tracking. Linear history is deliberately *not* required on this
+   repo precisely so that merge commits stay available.
+
+Two ruleset behaviours will bite you if you sync in the wrong order: pushing to
+the PR branch after someone approves **dismisses that approval** and requires a
+fresh one, and every review thread must be resolved before the merge button
+unlocks. So finish the rebuild and commit `dist/` *before* asking for review —
+the `dist/` regeneration is the step most likely to need a late fixup.
+
+Note that CI on this repo is **not** a required status check, so an approving
+review is the only gate: a PR whose build is red can still be merged. Check the
+build yourself before approving a sync.
+
+The protection was added org-wide in aiway-infra (Linear AI-1110) to satisfy the
+Vanta ISO 27001 / SOC 2 control "Application changes reviewed", which requires
+an approving review on every default branch. Losing the rebase-based sync was a
+known and accepted cost.
 
 After a DuckDB submodule bump, expect to fix the C++ glue in `lib/` against the
 new API (e.g. `external_threads` moved from a `DBConfigOptions` member to a
