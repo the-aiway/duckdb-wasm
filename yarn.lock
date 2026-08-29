@@ -173,7 +173,7 @@
 "@duckdb/duckdb-wasm-shell@file:packages/duckdb-wasm-shell":
   version "1.11.0"
   dependencies:
-    "@duckdb/duckdb-wasm" "file:../../Library/Caches/Yarn/v6/npm-@duckdb-duckdb-wasm-shell-1.11.0-cd5973a9-e0d4-42c9-8313-948a97882bf9-1781725678163/node_modules/@duckdb/duckdb-wasm"
+    "@duckdb/duckdb-wasm" "file:packages/duckdb-wasm"
     qs "^6.14.1"
     xterm "^5.3.0"
     xterm-addon-fit "^0.8.0"
@@ -7072,9 +7072,9 @@ socket.io-adapter@~2.5.2:
     ws "~8.21.0"
 
 socket.io-parser@~4.2.4:
-  version "4.2.6"
-  resolved "https://registry.yarnpkg.com/socket.io-parser/-/socket.io-parser-4.2.6.tgz#19156bf179af3931abd05260cfb1491822578a6f"
-  integrity sha512-asJqbVBDsBCJx0pTqw3WfesSY0iRX+2xzWEWzrpcH7L6fLzrhyF8WPI8UaeM4YCuDfpwA/cgsdugMsmtz8EJeg==
+  version "4.2.7"
+  resolved "https://registry.yarnpkg.com/socket.io-parser/-/socket.io-parser-4.2.7.tgz#679e51fe24d1c81df90fc5f7efe4a5f432fe99c0"
+  integrity sha512-IH/iSeO9T6gz1KkFleGDWkG9N3dl4jXVYUtMhIqH10Md0ttMer8nUNWiP1DKuNrybD2xBrixLJdCC9J6ECoYkg==
   dependencies:
     "@socket.io/component-emitter" "~3.1.0"
     debug "~4.4.1"
