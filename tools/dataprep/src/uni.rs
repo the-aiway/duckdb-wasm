@@ -4,10 +4,7 @@ use parquet::{
     arrow::arrow_to_parquet_schema,
     column::writer::ColumnWriter,
     data_type::ByteArray,
-    file::{
-        properties::WriterProperties,
-        writer::{FileWriter, SerializedFileWriter},
-    },
+    file::{properties::WriterProperties, writer::SerializedFileWriter},
 };
 use std::fs;
 use std::path::Path;
@@ -40,7 +37,7 @@ fn write_table(path: std::path::PathBuf, schema: Schema, data: Vec<StaticColumnD
                     data.len()
                 )));
             }
-            match (&data[column_id], &mut col_writer) {
+            match (&data[column_id], col_writer.untyped()) {
                 (StaticColumnData::Integer(ref v), ColumnWriter::Int32ColumnWriter(ref mut w)) => {
                     w.write_batch(v, None, None)?;
                 }
@@ -58,10 +55,10 @@ fn write_table(path: std::path::PathBuf, schema: Schema, data: Vec<StaticColumnD
                     )));
                 }
             }
-            row_group_writer.close_column(col_writer)?;
+            col_writer.close()?;
             column_id += 1;
         }
-        writer.close_row_group(row_group_writer)?;
+        row_group_writer.close()?;
         writer.close()?;
 
         Ok(())

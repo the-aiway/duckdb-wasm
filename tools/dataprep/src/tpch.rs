@@ -31,9 +31,8 @@ fn convert_tbl(
 
     // Create csv reader
     let tbl_file = fs::File::open(tbl_file_path)?;
-    let reader = arrow::csv::ReaderBuilder::new()
+    let reader = arrow::csv::ReaderBuilder::new(schema)
         .with_delimiter(b'|')
-        .with_schema(schema)
         .with_batch_size(20000)
         .build(tbl_file)?;
 
