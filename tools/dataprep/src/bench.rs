@@ -81,12 +81,12 @@ pub fn merge_benchmark_reports(report_dir: &Path) -> Result<(), Box<dyn std::err
         Field::new("system", DataType::Utf8, false),
         Field::new(
             "tags",
-            DataType::List(Box::new(Field::new("item", DataType::Utf8, true))),
+            DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
             false,
         ),
         Field::new(
             "parameters",
-            DataType::List(Box::new(Field::new("item", DataType::Float64, true))),
+            DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
             false,
         ),
         Field::new("cycles", DataType::Float64, false),
@@ -109,9 +109,13 @@ pub fn merge_benchmark_reports(report_dir: &Path) -> Result<(), Box<dyn std::err
     let mut benchmark: Vec<String> = Vec::new();
     let mut system: Vec<String> = Vec::new();
     let mut tags =
-        arrow::array::ListBuilder::new(arrow::array::StringBuilder::new(reports.len() * 20));
-    let mut params =
-        arrow::array::ListBuilder::new(arrow::array::Float64Builder::new(reports.len() * 20));
+        arrow::array::ListBuilder::new(arrow::array::StringBuilder::with_capacity(
+            reports.len() * 20,
+            reports.len() * 20,
+        ));
+    let mut params = arrow::array::ListBuilder::new(arrow::array::Float64Builder::with_capacity(
+        reports.len() * 20,
+    ));
     let mut timestamp = arrow::array::Float64Array::builder(reports.len());
     let mut cycles = arrow::array::Float64Array::builder(reports.len());
     let mut samples = arrow::array::Float64Array::builder(reports.len());
@@ -129,23 +133,23 @@ pub fn merge_benchmark_reports(report_dir: &Path) -> Result<(), Box<dyn std::err
         benchmark.push(report.benchmark);
         system.push(report.system);
         for tag in report.tags.drain(..) {
-            tags.values().append_value(tag)?;
+            tags.values().append_value(tag);
         }
-        tags.append(true)?;
+        tags.append(true);
         for param in report.parameters.drain(..) {
-            params.values().append_value(param)?;
+            params.values().append_value(param);
         }
-        params.append(true)?;
-        timestamp.append_value(report.timestamp.timestamp() as f64)?;
-        cycles.append_value(report.cycles as f64)?;
-        samples.append_value(report.samples as f64)?;
-        hz.append_value(report.hz as f64)?;
-        mean_time.append_value(report.mean_time as f64)?;
-        stddev.append_value(report.standard_deviation as f64)?;
-        max_time.append_value(report.max_time as f64)?;
-        min_time.append_value(report.min_time as f64)?;
-        run_time.append_value(report.run_time as f64)?;
-        total_time.append_value(report.total_time as f64)?;
+        params.append(true);
+        timestamp.append_value(report.timestamp.timestamp() as f64);
+        cycles.append_value(report.cycles as f64);
+        samples.append_value(report.samples as f64);
+        hz.append_value(report.hz as f64);
+        mean_time.append_value(report.mean_time as f64);
+        stddev.append_value(report.standard_deviation as f64);
+        max_time.append_value(report.max_time as f64);
+        min_time.append_value(report.min_time as f64);
+        run_time.append_value(report.run_time as f64);
+        total_time.append_value(report.total_time as f64);
         warning.push(report.warning.unwrap_or_default());
     }
 
