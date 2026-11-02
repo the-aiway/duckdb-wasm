@@ -538,10 +538,10 @@ rapidjson::Value WebFileSystem::WriteGlobalFileInfo(rapidjson::Document &doc, ui
     }
 
     if (!config_->auth_token.empty()) {
-        value.AddMember("bearerToken",
-                        rapidjson::Value{config_->auth_token.c_str(),
-                                         static_cast<rapidjson::SizeType>(config_->auth_token.size())},
-                        allocator);
+        value.AddMember(
+            "bearerToken",
+            rapidjson::Value{config_->auth_token.c_str(), static_cast<rapidjson::SizeType>(config_->auth_token.size())},
+            allocator);
     }
 
     value.AddMember("s3Config", writeS3Config(config_->duckdb_config_options, allocator), allocator);

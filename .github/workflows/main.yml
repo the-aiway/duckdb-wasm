@@ -73,7 +73,8 @@ jobs:
               uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
-                      yarn install --frozen-lockfile --prefer-offline
+                      # aiway fork: the ci-env image ships Node 18; some deps declare engines >=20
+                      yarn install --frozen-lockfile --prefer-offline --ignore-engines
 
             - name: Lint @duckdb/duckdb-wasm
               uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
