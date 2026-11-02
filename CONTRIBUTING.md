@@ -2,8 +2,10 @@
 
 ## Building the WebAssembly bundle locally
 
-These steps build the three `duckdb-*.wasm` variants (`mvp`, `eh`, `coi`) into
-`packages/duckdb-wasm/src/bindings/`. They are written for macOS (Apple Silicon);
+These steps build the two `duckdb-*.wasm` variants (`base`: single-threaded,
+needs Wasm exception handling; `threads`: pthreads, needs cross-origin isolation)
+into `packages/duckdb-wasm/src/bindings/`. Upstream dropped `mvp` and renamed
+`eh`/`coi` to `base`/`threads` (commit `5865187e`). They are written for macOS (Apple Silicon);
 Linux is analogous.
 
 > The Docker path (`docker compose run duckdb-wasm-ci`) is **not** usable: the
@@ -13,21 +15,17 @@ Linux is analogous.
 ### 1. Emscripten (into `./.emsdk`)
 
 The build (`scripts/wasm_build_lib.sh`) and `set_environment` auto-source
-`./.emsdk/emsdk_env.sh`, so install the SDK there. **Two versions are required**
-(matching CI): `3.1.71` for the `mvp`/`eh` variants and `3.1.57` for `coi`.
+`./.emsdk/emsdk_env.sh`, so install the SDK there. One version builds both
+variants (matching upstream CI, `EMSCRIPTEN_VERSION` in `.github/workflows/main.yml`):
 
 ```bash
 git clone https://github.com/emscripten-core/emsdk.git .emsdk
 cd .emsdk
-./emsdk install 3.1.71 && ./emsdk activate 3.1.71
-./emsdk install 3.1.57                 # the coi variant must use this (see step 5)
+./emsdk install 6.0.9 && ./emsdk activate 6.0.9
 cd ..
 ```
 
-(`.emsdk` is gitignored.) The `coi` variant **must** be built with `3.1.57`:
-Emscripten ≥ 3.1.68 no longer emits the separate pthread `*.worker.js` that
-`bundle.mjs` turns into `duckdb-coi.pthread.js`, so building `coi` with `3.1.71`
-yields a `.wasm` but then breaks `make js_release`.
+(`.emsdk` is gitignored.)
 
 ### 2. Host tools
 
@@ -41,14 +39,20 @@ brew install cmake ccache
 ### 3. Submodules (at their pinned commits)
 
 ```bash
-make submodules        # == git submodule update --init --recursive
+make submodules        # == git submodule update --init (not recursive)
 ```
 
-The WASM build needs `submodules/{duckdb,arrow,rapidjson}`.
+The WASM build needs `submodules/{duckdb,duckdb-nanoarrow,rapidjson}`. Arrow C++
+is gone (upstream serializes results with nanoarrow); an old `submodules/arrow/`
+checkout can be deleted.
 
 > If a shallow submodule checks out a branch tip instead of the pinned commit
 > (git status shows `+<sha>`), fetch the exact commit, e.g.:
-> `git -C submodules/arrow fetch --depth 1 origin <pinned-sha> && git -C submodules/arrow checkout <pinned-sha>`
+> `git -C submodules/duckdb-nanoarrow fetch --depth 1 origin <pinned-sha> && git -C submodules/duckdb-nanoarrow checkout --detach <pinned-sha>`
+>
+> `submodules/duckdb` has `update = rebase` in `.gitmodules`: when its pin moves,
+> `git submodule update` tries to rebase and stops mid-way. Run
+> `git -C submodules/duckdb rebase --abort` and check out the pin with `--detach`.
 
 ### 4. Apply patches
 
@@ -56,26 +60,32 @@ The WASM build needs `submodules/{duckdb,arrow,rapidjson}`.
 make apply_patches
 ```
 
-Applies `patches/{duckdb,arrow,rapidjson}/*.patch` to the submodule working
-trees. These must be re-checked whenever the duckdb submodule is bumped.
+Applies `patches/{duckdb,duckdb-nanoarrow,rapidjson}/*.patch` to the submodule
+working trees. These must be re-checked whenever the duckdb submodule is bumped
+(the target ignores failures: look for `*.rej` files afterwards).
 
 ### 5. Build
 
-`make wasm` builds all three variants with whichever Emscripten is *active*, so
-build `coi` separately with `3.1.57`:
+Export `OVERRIDE_GIT_DESCRIBE` set to the DuckDB release tag of the submodule,
+otherwise the build gets a development version and looks for extensions under
+the commit hash:
 
 ```bash
-# mvp + eh + (a throwaway coi) with 3.1.71
-(cd .emsdk && ./emsdk activate 3.1.71); . ./.emsdk/emsdk_env.sh >/dev/null
-make wasm                 # see Makefile for wasm_dev / wasm_debug / wasm_relsize
+. ./.emsdk/emsdk_env.sh >/dev/null
+export OVERRIDE_GIT_DESCRIBE=$(git -C submodules/duckdb describe --tags --exact-match)   # e.g. v2.0.0
 
-# rebuild coi with 3.1.57 so its pthread worker is emitted
-(cd .emsdk && ./emsdk activate 3.1.57); . ./.emsdk/emsdk_env.sh >/dev/null
-./scripts/wasm_build_lib.sh relperf coi
+# same commands as upstream CI (wasm_base / wasm_threads jobs)
+DUCKDB_PLATFORM=wasm_eh ./scripts/wasm_build_lib.sh relperf base
+DUCKDB_PLATFORM=wasm_threads ./scripts/wasm_build_lib.sh relperf threads
 
 # bundle the TypeScript and (re)generate dist (.cjs/.mjs/.d.ts + wasm .br/.zst)
 make js_release           # or js_debug
 ```
+
+`dist/` matches a global `dist/` ignore rule on some machines: new files must be
+added with `git add -f`, and `bundle.mjs` never deletes outputs, so remove files
+for renamed bundles by hand. Ship only the bundles, wasm (+ `.br`/`.zst`) and
+`types/`; `.map` and `tests-*` files are not tracked.
 
 The toolchain is pinned in `package.json` for reproducible declaration
 emit: `typescript ~5.6.3` (5.7 split `ArrayBuffer`/`SharedArrayBuffer`) and
@@ -108,8 +118,9 @@ To pull in upstream changes:
    removed, `apache-arrow` made external, custom esbuild `bundle.mjs`, HTTP auth
    token, etc.). Resolve conflicts by layering the fork's intent on top of
    upstream's newer code, exactly as before.
-4. Rebuild the wasm (steps 1–5 above) — `mvp`/`eh` with emscripten `3.1.71`,
-   `coi` with `3.1.57`.
+4. Rebuild the wasm (steps 1–5 above) with the Emscripten version upstream CI
+   uses (`EMSCRIPTEN_VERSION` in `.github/workflows/main.yml`, `6.0.9` as of the
+   2026-11 sync).
 5. `make js_release` and **commit the regenerated `dist/`** (it is committed and
    consumed directly from git — see below).
 6. Push the branch and open the PR:
@@ -147,7 +158,14 @@ regenerate and commit it after changing wasm or TypeScript.
 
 ## Notes
 
-- DuckDB is currently pinned to v1.5.4 (`submodules/duckdb`).
+- DuckDB is currently pinned to v2.0.0 (`submodules/duckdb`).
+- Downstream, the bundle file names are hardcoded in `the-aiway/query`
+  (`react/DuckDBProvider.ts`); renaming a bundle needs a matching change there.
+- Upstream's JS test suite expects `query()` to return an Arrow `Table` and
+  `columns` insert options as an object; the fork returns raw IPC bytes and takes
+  `SQLField[]`, so most of `yarn test:node` fails by design. The fork's lockfile
+  also resolves `web-worker` to 1.5.0 (upstream: 1.2.0), which cannot load the
+  CJS node worker, so every node spec fails in `beforeAll` until that is pinned.
 - DuckDB internals change across versions; the C++ glue in `lib/` may need
   updating after a submodule bump (e.g. `external_threads` moved from a
   `DBConfigOptions` member to a named setting in v1.5).

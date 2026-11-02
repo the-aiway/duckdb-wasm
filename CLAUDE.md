@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A fork of [DuckDB-Wasm](https://github.com/duckdb/duckdb-wasm) (published as `aiway-duckdb-wasm`, internal workspace still named `@duckdb/duckdb-wasm`). It compiles DuckDB (currently v1.4.2) plus Apache Arrow to WebAssembly and exposes a TypeScript API for running SQL/OLAP queries in the browser and Node. Yarn-workspaces monorepo.
+A fork of [DuckDB-Wasm](https://github.com/duckdb/duckdb-wasm) (published as `aiway-duckdb-wasm`, internal workspace still named `@duckdb/duckdb-wasm`). It compiles DuckDB (currently v2.0.0, with duckdb-nanoarrow for Arrow IPC) to WebAssembly and exposes a TypeScript API for running SQL/OLAP queries in the browser and Node. Yarn-workspaces monorepo.
 
 ### Fork-specific deviations from upstream (read before changing build or bindings)
 
@@ -20,17 +20,17 @@ These are the non-obvious places this fork diverges — upstream docs/issues wil
 
 Four layers, bottom to top:
 
-1. **C++ core — `lib/`** (`duckdb_web` library). The bridge between DuckDB's C++ and JS, compiled to WASM via Emscripten. Entry points: `lib/src/wasm_main.cc`, `lib/src/webdb_api.cc` (the C ABI exported to JS), `lib/src/webdb.cc` (the `WebDB`/`Connection` impl). Notable subsystems: `arrow_*` (Arrow IPC bridge), `io/` (virtual filesystems — `web_filesystem`, `buffered_filesystem`, `file_page_buffer`), `http_wasm.cc` (HTTP fetch backed FS), `extensions/` (json, parquet), `json_*` (JSON shredding/typedef).
+1. **C++ core — `lib/`** (`duckdb_web` library). The bridge between DuckDB's C++ and JS, compiled to WASM via Emscripten. Entry points: `lib/src/wasm_main.cc`, `lib/src/webdb_api.cc` (the C ABI exported to JS), `lib/src/webdb.cc` (the `WebDB`/`Connection` impl). Notable subsystems: `arrow_*` (Arrow IPC bridge, backed by nanoarrow), `io/` (virtual filesystems — `web_filesystem`, `buffered_filesystem`, `file_page_buffer`), `http_wasm.cc` (HTTP fetch backed FS), `extensions/` (json, parquet), `json_*` (JSON shredding/typedef).
 
-2. **Submodules — `submodules/`** (git submodules): DuckDB itself, Arrow, plus build/test deps (gflags, googletest, benchmark, spdlog, rapidjson, tpch-dbgen). Patched at build time by `patches/{duckdb,arrow,rapidjson}/*.patch`.
+2. **Submodules — `submodules/`** (git submodules): DuckDB itself, duckdb-nanoarrow (Arrow IPC; Arrow C++ was removed upstream), plus build/test deps (gflags, googletest, benchmark, spdlog, rapidjson, tpch-dbgen). Patched at build time by `patches/{duckdb,duckdb-nanoarrow,rapidjson}/*.patch`.
 
-3. **WASM artifacts**: each build produces three variants — **mvp** (baseline), **eh** (Wasm exception handling), **coi** (cross-origin isolation + pthreads/multithreading). Outputs land in `packages/duckdb-wasm/src/bindings/duckdb-{mvp,eh,coi}.wasm` and are copied to `dist/` by `bundle.mjs`.
+3. **WASM artifacts**: two variants — **base** (single-threaded, needs Wasm exception handling; DuckDB platform `wasm_eh`) and **threads** (pthreads, needs cross-origin isolation; platform `wasm_threads`). Upstream dropped `mvp` and renamed `eh`/`coi` in 2026-10. Outputs land in `packages/duckdb-wasm/src/bindings/duckdb-{base,threads}.wasm` and are copied to `dist/` by `bundle.mjs`. Built with Emscripten 6.0.9.
 
 4. **TypeScript API — `packages/duckdb-wasm/src/`**:
-   - `bindings/` — the **synchronous** binding layer that talks directly to the loaded WASM module. `bindings_base.ts` is the shared impl; per-platform × per-variant subclasses (`bindings_{browser,node}_{base,mvp,eh,coi}.ts`). `runtime.ts` / `runtime_{browser,node}.ts` implement the filesystem/HTTP callbacks the WASM module calls back into. `connection.ts` is a sync query handle.
+   - `bindings/` — the **synchronous** binding layer that talks directly to the loaded WASM module. `bindings_base.ts` is the shared impl; per-platform × per-variant subclasses (`bindings_{browser,node}_{base,common}.ts`, `bindings_browser_threads.ts`). `runtime.ts` / `runtime_{browser,node}.ts` implement the filesystem/HTTP callbacks the WASM module calls back into. `connection.ts` is a sync query handle.
    - `parallel/` — the **async** layer and the main public API. `AsyncDuckDB` (`async_bindings.ts`) runs the WASM module inside a Web Worker, communicating via `worker_request.ts` message types; `worker_dispatcher.ts` is the worker-side handler. `async_connection.ts` is the async query handle.
    - `targets/` — bundle entry points (one per platform/variant/worker), the inputs to `bundle.mjs`. `targets/duckdb.ts` is the public type-export surface.
-   - Top level: `index.ts` (re-exports), `log.ts`, `platform.ts` (feature detection picking mvp/eh/coi), `status.ts`, `version.ts`.
+   - Top level: `index.ts` (re-exports), `log.ts`, `platform.ts` (feature detection picking base/threads), `status.ts`, `version.ts`.
 
 ### Other workspace packages
 `packages/duckdb-wasm-shell` (Rust→Wasm terminal shell, built with wasm-pack), `packages/duckdb-wasm-app` (the shell.duckdb.org web app), `packages/react-duckdb` (React bindings), `packages/benchmarks`. Runnable examples live in `examples/`.

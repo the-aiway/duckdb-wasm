@@ -17,6 +17,13 @@ export declare abstract class AsyncDuckDBDispatcher implements Logger {
     protected sendOK(request: WorkerRequestVariant): void;
     /** Fail with an error */
     protected failWith(request: WorkerRequestVariant, e: Error): void;
+    /** The requests are processed in the order they arrive, even if a request has to wait for asynchronous work */
+    private _requests;
+    /** Checkpoint files, unless a query is still executing: a pending query that was not polled to its end or a
+     * result stream that was not fetched to its end keeps DuckDB's worker threads busy between requests */
+    private checkpointFiles;
     /** Process a request from the main thread */
     onMessage(request: WorkerRequestVariant): Promise<void>;
+    /** Process a single request */
+    private processRequest;
 }

@@ -2,20 +2,15 @@ export declare const isNode: () => boolean;
 export declare const isFirefox: () => boolean;
 export declare const isSafari: () => boolean;
 /** Bundles have different characteristics:
- * - MVP: minimum viable product (uses features from first stable version of WebAssembly standard)
- * - EH: exception handling
- * - COI: cross origin isolation
+ * - base: single-threaded, requires WebAssembly exception handling
+ * - threads: multi-threaded, additionally requires SIMD, threads and cross origin isolation
  */
 export interface DuckDBBundles {
-    mvp: {
+    base: {
         mainModule: string;
         mainWorker: string;
     };
-    eh?: {
-        mainModule: string;
-        mainWorker: string;
-    };
-    coi?: {
+    threads?: {
         mainModule: string;
         mainWorker: string;
         pthreadWorker: string;
@@ -36,4 +31,6 @@ export interface PlatformFeatures {
     wasmThreads: boolean;
 }
 export declare function getPlatformFeatures(): Promise<PlatformFeatures>;
+/** Every bundle requires WebAssembly exception handling, throws if the platform does not support it */
+export declare function checkPlatformSupport(): Promise<PlatformFeatures>;
 export declare function selectBundle(bundles: DuckDBBundles): Promise<DuckDBBundle>;

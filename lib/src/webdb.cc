@@ -16,19 +16,6 @@
 #include <unordered_map>
 
 #include "../../third_party/mbedtls/include/mbedtls_wrapper.hpp"
-#include "arrow/array/array_dict.h"
-#include "arrow/array/array_nested.h"
-#include "arrow/array/builder_primitive.h"
-#include "arrow/buffer.h"
-#include "arrow/io/memory.h"
-#include "arrow/ipc/options.h"
-#include "arrow/ipc/reader.h"
-#include "arrow/ipc/type_fwd.h"
-#include "arrow/ipc/writer.h"
-#include "arrow/record_batch.h"
-#include "arrow/result.h"
-#include "arrow/status.h"
-#include "arrow/type_fwd.h"
 #include "duckdb.hpp"
 #include "duckdb/common/arrow/arrow.hpp"
 #include "duckdb/common/arrow/arrow_converter.hpp"
@@ -39,42 +26,70 @@
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/types/vector_buffer.hpp"
 #include "duckdb/common/virtual_file_system.hpp"
+#include "duckdb/function/table/arrow.hpp"
 #include "duckdb/function/table/arrow/arrow_duck_schema.hpp"
+#include "duckdb/main/buffered_data/buffered_data.hpp"
 #include "duckdb/main/query_result.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/parser/keyword_helper.hpp"
+#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/parser/parser.hpp"
-#include "duckdb/web/arrow_bridge.h"
-#include "duckdb/web/arrow_casts.h"
+#include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/web/arrow_insert_options.h"
-#include "duckdb/web/arrow_stream_buffer.h"
-#include "duckdb/web/arrow_type_mapping.h"
+#include "duckdb/web/arrow_ipc_writer.h"
 #include "duckdb/web/config.h"
 #include "duckdb/web/csv_insert_options.h"
 #include "duckdb/web/environment.h"
+#include "duckdb/web/extension_provider.h"
 #include "duckdb/web/extensions/json_extension.h"
 #include "duckdb/web/extensions/parquet_extension.h"
+#include "duckdb/web/extensions/tpch_extension.h"
 #include "duckdb/web/functions/table_function_relation.h"
 #include "duckdb/web/http_wasm.h"
-#include "duckdb/web/io/arrow_ifstream.h"
 #include "duckdb/web/io/buffered_filesystem.h"
 #include "duckdb/web/io/file_page_buffer.h"
 #include "duckdb/web/io/ifstream.h"
+#include "duckdb/web/io/remote_filesystem.h"
 #include "duckdb/web/io/web_filesystem.h"
-#include "duckdb/web/json_analyzer.h"
 #include "duckdb/web/json_dataview.h"
 #include "duckdb/web/json_insert_options.h"
-#include "duckdb/web/json_table.h"
+#include "duckdb/web/main_thread.h"
+#include "duckdb/web/query_thread.h"
+#include "duckdb/web/status.h"
 #include "duckdb/web/udf.h"
 #include "duckdb/web/utils/debug.h"
 #include "duckdb/web/utils/wasm_response.h"
+#include "duckdb_static_extension.h"
+#include "nanoarrow/nanoarrow.hpp"
+#include "nanoarrow/nanoarrow_ipc.hpp"
 #include "rapidjson/document.h"
 #include "rapidjson/error/en.h"
 #include "rapidjson/rapidjson.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
 
+extern "C" int32_t duckdb_extension_core_functions_describe(duckdb_extension_descriptor* descriptor);
+extern "C" int32_t duckdb_extension_nanoarrow_describe(duckdb_extension_descriptor* descriptor);
+extern "C" int32_t duckdb_extension_httplib_describe(duckdb_extension_descriptor* descriptor);
+
 namespace duckdb {
+
+namespace {
+// core_functions and nanoarrow are linked statically, the HTTP client is the httplib capability of this build:
+// register them for every database opened afterwards
+struct StaticExtensionsInit {
+    StaticExtensionsInit() {
+        duckdb_register_static_extension(duckdb_extension_core_functions_describe);
+        duckdb_register_static_extension(duckdb_extension_nanoarrow_describe);
+        duckdb_register_static_extension(duckdb_extension_httplib_describe);
+    }
+} _static_extensions_init;
+}  // namespace
+
+// FIXME: DuckDB used to be patched to consult this in DatabaseInstance::ExtensionIsLoaded("httpfs"),
+// after the bump to v2.0 the flag is only tracked here and has no effect on DuckDB.
+bool preloaded_httpfs = false;
 
 namespace {
 struct PreloadedHttpfsInit {
@@ -98,7 +113,7 @@ duckdb::unique_ptr<WebDB> WebDB::Create() {
     }
 }
 /// Get the static webdb instance
-arrow::Result<std::reference_wrapper<WebDB>> WebDB::Get() {
+web::Result<std::reference_wrapper<WebDB>> WebDB::Get() {
     static duckdb::unique_ptr<WebDB> db = nullptr;
     if (db == nullptr) {
         db = Create();
@@ -107,159 +122,231 @@ arrow::Result<std::reference_wrapper<WebDB>> WebDB::Get() {
 }
 
 /// Constructor
-WebDB::Connection::Connection(WebDB& webdb)
-    : webdb_(webdb), connection_(*webdb.database_), arrow_ipc_stream_(nullptr) {}
+WebDB::Connection::Connection(WebDB& webdb) : webdb_(webdb), connection_(*webdb.database_) {}
 /// Constructor
 WebDB::Connection::~Connection() = default;
 
-arrow::Result<std::shared_ptr<arrow::Buffer>> WebDB::Connection::MaterializeQueryResult(
+namespace {
+/// Convert identifiers to plain column names
+vector<string> ColumnNames(const vector<Identifier>& identifiers) {
+    vector<string> names;
+    names.reserve(identifiers.size());
+    for (auto& identifier : identifiers) {
+        names.push_back(identifier.GetIdentifierName());
+    }
+    return names;
+}
+/// Encode column types as the struct value the columns parameter of read_csv / read_json expects
+Value ColumnTypesValue(const child_list_t<LogicalType>& columns) {
+    child_list_t<Value> values;
+    values.reserve(columns.size());
+    for (auto& col : columns) {
+        values.emplace_back(col.first, Value(col.second.ToString()));
+    }
+    return Value::STRUCT(std::move(values));
+}
+/// Does the buffered Arrow IPC stream end with its end-of-stream marker? Messages are scanned from the given
+/// offset, which is advanced past every complete message.
+web::Result<bool> ArrowIPCStreamComplete(const std::vector<uint8_t>& stream, size_t& scanned) {
+    nanoarrow::ipc::UniqueDecoder decoder;
+    ArrowIpcDecoderInit(decoder.get());
+    while (scanned < stream.size()) {
+        ArrowBufferView data{{stream.data() + scanned}, static_cast<int64_t>(stream.size() - scanned)};
+        int32_t prefix_size = 0;
+        ArrowError error{};
+        auto code = ArrowIpcDecoderPeekHeader(decoder.get(), data, &prefix_size, &error);
+        if (code == ESPIPE) {
+            // The header is not complete yet
+            return false;
+        }
+        if (code == ENODATA) {
+            // The end of the stream
+            return true;
+        }
+        if (code != NANOARROW_OK) {
+            return web::Status::Invalid("Invalid Arrow IPC stream: ", ArrowErrorMessage(&error));
+        }
+        code = ArrowIpcDecoderVerifyHeader(decoder.get(), data, &error);
+        if (code == ESPIPE) {
+            return false;
+        }
+        if (code != NANOARROW_OK) {
+            return web::Status::Invalid("Invalid Arrow IPC stream: ", ArrowErrorMessage(&error));
+        }
+        // The header size includes the prefix
+        auto message_size = decoder->header_size_bytes + decoder->body_size_bytes;
+        if (scanned + message_size > stream.size()) {
+            // The body is not complete yet
+            return false;
+        }
+        scanned += message_size;
+    }
+    return false;
+}
+
+/// Can a stream be opened on a submitted query result? DuckDB decides which statements stream by default (a SELECT
+/// producing a query result); anything else, a CREATE TABLE AS for one, must run to completion before its result
+/// is returned. A result already retained cannot be streamed either.
+bool CanStream(const QueryResult& result) {
+    return !result.HasError() && result.HasBufferedData() && StreamsByDefault(result.GetStatementType(), result) &&
+           result.GetBufferedData().Lifetime() != ResultLifetime::RETAINED;
+}
+}  // namespace
+
+web::Result<std::shared_ptr<web::Buffer>> WebDB::Connection::MaterializeQueryResult(
     duckdb::unique_ptr<duckdb::QueryResult> result) {
     current_query_result_.reset();
-    current_schema_.reset();
-    current_schema_patched_.reset();
+    current_query_stream_.reset();
+    current_ipc_writer_.reset();
 
-    // Configure the output writer
-    ArrowSchema raw_schema;
-    bool lossless_conversion = webdb_.config_->arrow_lossless_conversion;
-    ClientProperties options("UTC", ArrowOffsetSize::REGULAR, false, false, lossless_conversion,
-                             ArrowFormatVersion::V1_0, connection_.context);
-    auto extension_type_cast = ArrowTypeExtensionData::GetExtensionTypes(*connection_.context, result->types);
-    options.arrow_offset_size = ArrowOffsetSize::REGULAR;
-    ArrowConverter::ToArrowSchema(&raw_schema, result->types, result->names, options);
-    ARROW_ASSIGN_OR_RAISE(auto schema, arrow::ImportSchema(&raw_schema));
-
-    // Patch the schema (if necessary)
-    std::shared_ptr<arrow::Schema> patched_schema = patchSchema(schema, webdb_.config_->query);
-    // Create the file writer
-    ARROW_ASSIGN_OR_RAISE(auto out, arrow::io::BufferOutputStream::Create());
-    ARROW_ASSIGN_OR_RAISE(auto writer, arrow::ipc::MakeFileWriter(out, patched_schema));
-
-    // Write chunk stream
-    for (auto chunk = result->Fetch(); !!chunk && chunk->size() > 0; chunk = result->Fetch()) {
-        // Import the data chunk as record batch
-        ArrowArray array;
-        ArrowConverter::ToArrowArray(*chunk, &array, options, extension_type_cast);
-        // Import the record batch
-        ARROW_ASSIGN_OR_RAISE(auto batch, arrow::ImportRecordBatch(&array, schema));
-        // Patch the record batch
-        ARROW_ASSIGN_OR_RAISE(batch, patchRecordBatch(batch, patched_schema, webdb_.config_->query));
-        // Write the record batch
-        ARROW_RETURN_NOT_OK(writer->WriteRecordBatch(*batch));
-    }
-    ARROW_RETURN_NOT_OK(writer->Close());
-    return out->Finish();
+    ArrowIPCWriter writer{*connection_.context, result->GetTypes(), ColumnNames(result->GetNames()),
+                          webdb_.config_->query, webdb_.config_->arrow_lossless_conversion};
+    return writer.SerializeResult(*result);
 }
 
-arrow::Result<std::shared_ptr<arrow::Buffer>> WebDB::Connection::StreamQueryResult(
+web::Result<std::shared_ptr<web::Buffer>> WebDB::Connection::StreamQueryResult(
     duckdb::unique_ptr<duckdb::QueryResult> result) {
-    current_query_result_ = std::move(result);
-    current_schema_.reset();
-    current_schema_patched_.reset();
+    current_query_result_.reset();
+    current_query_stream_.reset();
+    current_ipc_writer_.reset();
+    auto types = result->GetTypes();
+    auto names = ColumnNames(result->GetNames());
+    // Stream the result if possible, otherwise chunks are fetched from the retained result
+    if (CanStream(*result)) {
+        current_query_stream_ = duckdb::make_uniq<duckdb::QueryResultStream<>>(std::move(result));
+    } else {
+        current_query_result_ = std::move(result);
+    }
 
-    // Import the schema
-    ArrowSchema raw_schema;
-    bool lossless_conversion = webdb_.config_->arrow_lossless_conversion;
-    ClientProperties options("UTC", ArrowOffsetSize::REGULAR, false, false, lossless_conversion,
-                             ArrowFormatVersion::V1_0, connection_.context);
-    options.arrow_offset_size = ArrowOffsetSize::REGULAR;
-    ArrowConverter::ToArrowSchema(&raw_schema, current_query_result_->types, current_query_result_->names, options);
-    ARROW_ASSIGN_OR_RAISE(current_schema_, arrow::ImportSchema(&raw_schema));
-    current_schema_patched_ = patchSchema(current_schema_, webdb_.config_->query);
-
-    // Serialize the schema
-    return arrow::ipc::SerializeSchema(*current_schema_patched_);
+    // Serialize the schema, the record batches follow in FetchQueryResults
+    current_ipc_writer_ =
+        std::make_unique<ArrowIPCWriter>(*connection_.context, std::move(types), std::move(names),
+                                         webdb_.config_->query, webdb_.config_->arrow_lossless_conversion);
+    return current_ipc_writer_->SerializeSchema();
 }
 
-arrow::Result<std::shared_ptr<arrow::Buffer>> WebDB::Connection::RunQuery(std::string_view text) {
+web::Result<std::shared_ptr<web::Buffer>> WebDB::Connection::RunQuery(std::string_view text) {
     try {
         // Send the query
-        auto result = connection_.SendQuery(std::string{text});
-        if (result->HasError()) {
-            return arrow::Status{arrow::StatusCode::ExecutionError, std::move(result->GetError())};
+        auto result = connection_.Query(std::string{text});
+        // Multiple statements produce a chain of results, return the last one
+        while (true) {
+            if (result->HasError()) {
+                return web::Status{web::StatusCode::ExecutionError, result->GetError()};
+            }
+            if (!result->next) break;
+            auto next = std::move(result->next);
+            result = std::move(next);
         }
         return MaterializeQueryResult(std::move(result));
     } catch (std::exception& e) {
-        return arrow::Status{arrow::StatusCode::ExecutionError, e.what()};
+        return web::Status{web::StatusCode::ExecutionError, e.what()};
     } catch (...) {
-        return arrow::Status{arrow::StatusCode::ExecutionError, "unknown exception"};
+        return web::Status{web::StatusCode::ExecutionError, "unknown exception"};
     }
 }
 
-arrow::Result<std::shared_ptr<arrow::Buffer>> WebDB::Connection::PendingQuery(std::string_view text,
-                                                                              bool allow_stream_result) {
+web::Result<std::shared_ptr<web::Buffer>> WebDB::Connection::PendingQuery(std::string_view text,
+                                                                          bool allow_stream_result) {
     try {
         auto statements = connection_.ExtractStatements(std::string{text});
         if (statements.size() == 0) {
-            return arrow::Status{arrow::StatusCode::ExecutionError, "no statements"};
+            return web::Status{web::StatusCode::ExecutionError, "no statements"};
         }
         current_pending_statements_ = std::move(statements);
         current_pending_statement_index_ = 0;
         current_allow_stream_result_ = allow_stream_result;
-        // Send the first query
-        auto result = connection_.PendingQuery(std::move(current_pending_statements_[current_pending_statement_index_]),
-                                               current_allow_stream_result_);
-        if (result->HasError()) {
-            current_pending_statements_.clear();
-            return arrow::Status{arrow::StatusCode::ExecutionError, std::move(result->GetError())};
-        }
-        current_pending_query_result_ = std::move(result);
-        current_pending_query_was_canceled_ = false;
+        current_pending_query_result_.reset();
         current_query_result_.reset();
-        current_schema_.reset();
-        current_schema_patched_.reset();
+        current_query_stream_.reset();
+        current_ipc_writer_.reset();
+        // Send the first query
+        WEB_RETURN_NOT_OK(SubmitPendingStatement());
+        current_pending_query_was_canceled_ = false;
         if (webdb_.config_->query.query_polling_interval.value_or(DEFAULT_QUERY_POLLING_INTERVAL) > 0) {
             return PollPendingQuery();
         } else {
             return nullptr;
         }
     } catch (std::exception& e) {
-        return arrow::Status{arrow::StatusCode::ExecutionError, e.what()};
+        return web::Status{web::StatusCode::ExecutionError, e.what()};
     } catch (...) {
-        return arrow::Status{arrow::StatusCode::ExecutionError, "unknown exception"};
+        return web::Status{web::StatusCode::ExecutionError, "unknown exception"};
     }
 }
 
-arrow::Result<std::shared_ptr<arrow::Buffer>> WebDB::Connection::PollPendingQuery() {
+web::Status WebDB::Connection::SubmitPendingStatement() {
+    auto result = connection_.Submit(std::move(current_pending_statements_[current_pending_statement_index_]));
+    if (result->HasError()) {
+        current_pending_query_result_.reset();
+        current_pending_statements_.clear();
+        return web::Status{web::StatusCode::ExecutionError, result->GetError()};
+    }
+    // Only the result of the last statement is returned, and only that may be streamed.
+    // Everything else is materialized while polling.
+    bool is_last = current_pending_statement_index_ + 1 == current_pending_statements_.size();
+    current_pending_query_streams_ = is_last && current_allow_stream_result_ && CanStream(*result);
+    if (!current_pending_query_streams_) {
+        result->Materialize();
+    }
+    current_pending_query_result_ = std::move(result);
+    return web::Status::OK();
+}
+
+web::Result<std::shared_ptr<web::Buffer>> WebDB::Connection::PollPendingQuery() {
     if (current_pending_query_was_canceled_) {
-        return arrow::Status{arrow::StatusCode::ExecutionError, "query was canceled"};
+        return web::Status{web::StatusCode::ExecutionError, "query was canceled"};
     } else if (current_pending_query_result_ == nullptr) {
-        return arrow::Status{arrow::StatusCode::ExecutionError, "no active pending query"};
+        return web::Status{web::StatusCode::ExecutionError, "no active pending query"};
     }
     auto before = std::chrono::steady_clock::now();
     uint64_t elapsed;
     auto polling_interval = webdb_.config_->query.query_polling_interval.value_or(DEFAULT_QUERY_POLLING_INTERVAL);
     do {
-        switch (current_pending_query_result_->ExecuteTask()) {
-            case PendingExecutionResult::EXECUTION_FINISHED:
-            case PendingExecutionResult::RESULT_READY: {
-                auto result = current_pending_query_result_->Execute();
+        QueryResultState state;
+        if (current_pending_query_streams_) {
+            // Poll runs no task and is safe on results that already completed. READY means the engine waits for
+            // the retention decision: the result is handed over at that point and its stream drives it
+            state = current_pending_query_result_->Poll();
+            if (!IsObservable(state)) {
+                state = current_pending_query_result_->ExecuteTask();
+            }
+        } else {
+            // A materialized result (the decision was made at submission) runs here until it finished. Only the
+            // ExecuteTask call that reports FINISHED ends the query (Poll's FINISHED does not), and a query nobody
+            // ended is aborted when its result closes; Complete makes the end explicit and collects the rows
+            state = current_pending_query_result_->ExecuteTask();
+            if (state == QueryResultState::READY) {
+                state = QueryResultState::NOT_READY;
+            } else if (state == QueryResultState::FINISHED) {
+                current_pending_query_result_->Complete();
+            }
+        }
+        switch (state) {
+            case QueryResultState::FINISHED:
+            case QueryResultState::READY: {
+                auto result = std::move(current_pending_query_result_);
                 current_pending_statement_index_++;
                 // If this was the last statement, then return the result
                 if (current_pending_statement_index_ == current_pending_statements_.size()) {
+                    current_pending_statements_.clear();
                     return StreamQueryResult(std::move(result));
                 }
                 // Otherwise, start the next statement
-                auto pending_result =
-                    connection_.PendingQuery(std::move(current_pending_statements_[current_pending_statement_index_]),
-                                             current_allow_stream_result_);
-                if (pending_result->HasError()) {
-                    current_pending_query_result_.reset();
-                    current_pending_statements_.clear();
-                    return arrow::Status{arrow::StatusCode::ExecutionError, std::move(pending_result->GetError())};
-                }
-                current_pending_query_result_ = std::move(pending_result);
+                result.reset();
+                WEB_RETURN_NOT_OK(SubmitPendingStatement());
                 break;
             }
-            case PendingExecutionResult::BLOCKED:
-            case PendingExecutionResult::NO_TASKS_AVAILABLE:
+            case QueryResultState::BLOCKED:
+            case QueryResultState::NO_TASKS_AVAILABLE:
                 return nullptr;
-            case PendingExecutionResult::RESULT_NOT_READY:
+            case QueryResultState::NOT_READY:
                 break;
-            case PendingExecutionResult::EXECUTION_ERROR: {
+            case QueryResultState::EXECUTION_ERROR: {
                 auto err = current_pending_query_result_->GetError();
                 current_pending_query_result_.reset();
                 current_pending_statements_.clear();
-                return arrow::Status{arrow::StatusCode::ExecutionError, err};
+                return web::Status{web::StatusCode::ExecutionError, err};
             }
         }
         auto after = std::chrono::steady_clock::now();
@@ -270,7 +357,8 @@ arrow::Result<std::shared_ptr<arrow::Buffer>> WebDB::Connection::PollPendingQuer
 
 bool WebDB::Connection::CancelPendingQuery() {
     // Only reset the pending query if it hasn't completed yet
-    if (current_pending_query_result_ != nullptr && current_query_result_ == nullptr) {
+    if (current_pending_query_result_ != nullptr && current_query_result_ == nullptr &&
+        current_query_stream_ == nullptr) {
         current_pending_query_was_canceled_ = true;
         current_pending_query_result_.reset();
         current_pending_statements_.clear();
@@ -284,83 +372,72 @@ DuckDBWasmResultsWrapper WebDB::Connection::FetchQueryResults() {
     try {
         // Fetch data if a query is active
         duckdb::unique_ptr<duckdb::DataChunk> chunk;
-        if (current_query_result_ == nullptr) {
+        if (current_query_result_ == nullptr && current_query_stream_ == nullptr) {
             return DuckDBWasmResultsWrapper{nullptr};
         }
 
-        if (current_query_result_->type == QueryResultType::STREAM_RESULT) {
-            auto& stream_result = current_query_result_->Cast<duckdb::StreamQueryResult>();
-
+        if (current_query_stream_ != nullptr) {
+            auto& stream = *current_query_stream_;
             auto before = std::chrono::steady_clock::now();
             uint64_t elapsed;
             auto polling_interval =
                 webdb_.config_->query.query_polling_interval.value_or(DEFAULT_QUERY_POLLING_INTERVAL);
-            bool ready = false;
+            bool done = false;
             do {
-                switch (stream_result.ExecuteTask()) {
-                    case StreamExecutionResult::EXECUTION_ERROR:
-                        return arrow::Status{arrow::StatusCode::ExecutionError,
-                                             std::move(current_query_result_->GetError())};
-                    case StreamExecutionResult::EXECUTION_CANCELLED:
-                        return arrow::Status{arrow::StatusCode::ExecutionError,
-                                             "The execution of the query was cancelled before it could finish, likely "
-                                             "caused by executing a different query"};
-                    case StreamExecutionResult::CHUNK_READY:
-                    case StreamExecutionResult::EXECUTION_FINISHED:
-                        ready = true;
-                        break;
-                    case StreamExecutionResult::BLOCKED:
-                        stream_result.WaitForTask();
+                // Pop a chunk if one is buffered, this does not run any task
+                auto state = stream.TryFetch(chunk);
+                if (chunk) break;
+                if (state == QueryResultState::FINISHED) {
+                    done = true;
+                    break;
+                }
+                if (state != QueryResultState::EXECUTION_ERROR) {
+                    state = stream.ExecuteTask();
+                }
+                switch (state) {
+                    case QueryResultState::EXECUTION_ERROR:
+                        return web::Status{web::StatusCode::ExecutionError, stream.GetError()};
+                    case QueryResultState::BLOCKED:
+                        stream.WaitForTask();
                         return DuckDBWasmResultsWrapper::ResponseStatus::DUCKDB_WASM_RETRY;
-                    case StreamExecutionResult::NO_TASKS_AVAILABLE:
+                    case QueryResultState::NO_TASKS_AVAILABLE:
                         return DuckDBWasmResultsWrapper::ResponseStatus::DUCKDB_WASM_RETRY;
-                    case StreamExecutionResult::CHUNK_NOT_READY:
+                    case QueryResultState::READY:
+                    case QueryResultState::NOT_READY:
+                    case QueryResultState::FINISHED:
                         break;
                 }
 
                 auto after = std::chrono::steady_clock::now();
                 elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(after - before).count();
-            } while (!ready && elapsed < polling_interval);
+            } while (elapsed < polling_interval);
 
-            if (!ready) {
+            if (!chunk && !done) {
                 return DuckDBWasmResultsWrapper::ResponseStatus::DUCKDB_WASM_RETRY;
             }
-        }
-
-        // Fetch next result chunk
-        chunk = current_query_result_->Fetch();
-        if (current_query_result_->HasError()) {
-            return arrow::Status{arrow::StatusCode::ExecutionError, std::move(current_query_result_->GetError())};
+        } else {
+            // Fetch next result chunk
+            chunk = current_query_result_->Fetch();
+            if (current_query_result_->HasError()) {
+                return web::Status{web::StatusCode::ExecutionError, current_query_result_->GetError()};
+            }
         }
         // Reached end?
         if (!chunk) {
             current_query_result_.reset();
-            current_schema_.reset();
-            current_schema_patched_.reset();
+            current_query_stream_.reset();
+            current_ipc_writer_.reset();
             return DuckDBWasmResultsWrapper{nullptr};
         }
 
         // Serialize the record batch
-        ArrowArray array;
-        bool lossless_conversion = webdb_.config_->arrow_lossless_conversion;
-        ClientProperties arrow_options("UTC", ArrowOffsetSize::REGULAR, false, false, lossless_conversion,
-                                       ArrowFormatVersion::V1_0, connection_.context);
-        auto extension_type_cast = ArrowTypeExtensionData::GetExtensionTypes(*connection_.context, chunk->GetTypes());
-        arrow_options.arrow_offset_size = ArrowOffsetSize::REGULAR;
-        ArrowConverter::ToArrowArray(*chunk, &array, arrow_options, extension_type_cast);
-        ARROW_ASSIGN_OR_RAISE(auto batch, arrow::ImportRecordBatch(&array, current_schema_));
-        // Patch the record batch
-        ARROW_ASSIGN_OR_RAISE(batch, patchRecordBatch(batch, current_schema_patched_, webdb_.config_->query));
-        // Serialize the record batch
-        auto options = arrow::ipc::IpcWriteOptions::Defaults();
-        options.use_threads = false;
-        return arrow::ipc::SerializeRecordBatch(*batch, options);
+        return current_ipc_writer_->SerializeChunk(*chunk);
     } catch (std::exception& e) {
-        return arrow::Status{arrow::StatusCode::ExecutionError, e.what()};
+        return web::Status{web::StatusCode::ExecutionError, e.what()};
     }
 }
 /// Fetch table names
-arrow::Result<std::string> WebDB::Connection::GetTableNames(std::string_view text) {
+web::Result<std::string> WebDB::Connection::GetTableNames(std::string_view text) {
     try {
         rapidjson::Document doc;
         auto table_name_set = connection_.GetTableNames(std::string{text});
@@ -376,14 +453,14 @@ arrow::Result<std::string> WebDB::Connection::GetTableNames(std::string_view tex
         doc.Accept(writer);
         return strbuf.GetString();
     } catch (std::exception& e) {
-        return arrow::Status{arrow::StatusCode::ExecutionError, e.what()};
+        return web::Status{web::StatusCode::ExecutionError, e.what()};
     }
 }
 
-arrow::Result<size_t> WebDB::Connection::CreatePreparedStatement(std::string_view text) {
+web::Result<size_t> WebDB::Connection::CreatePreparedStatement(std::string_view text) {
     try {
         auto prep = connection_.Prepare(std::string{text});
-        if (prep->HasError()) return arrow::Status{arrow::StatusCode::ExecutionError, prep->GetError()};
+        if (prep->HasError()) return web::Status{web::StatusCode::ExecutionError, prep->GetError()};
         auto id = next_prepared_statement_id_++;
 
         // Wrap around if maximum exceeded
@@ -392,21 +469,21 @@ arrow::Result<size_t> WebDB::Connection::CreatePreparedStatement(std::string_vie
         prepared_statements_.emplace(id, std::move(prep));
         return id;
     } catch (std::exception& e) {
-        return arrow::Status{arrow::StatusCode::ExecutionError, e.what()};
+        return web::Status{web::StatusCode::ExecutionError, e.what()};
     }
 }
 
-arrow::Result<duckdb::unique_ptr<duckdb::QueryResult>> WebDB::Connection::ExecutePreparedStatement(
-    size_t statement_id, std::string_view args_json) {
+web::Result<duckdb::unique_ptr<duckdb::QueryResult>> WebDB::Connection::ExecutePreparedStatement(
+    size_t statement_id, std::string_view args_json, bool allow_stream_result) {
     try {
         auto stmt = prepared_statements_.find(statement_id);
         if (stmt == prepared_statements_.end())
-            return arrow::Status{arrow::StatusCode::KeyError, "No prepared statement found with ID"};
+            return web::Status{web::StatusCode::KeyError, "No prepared statement found with ID"};
 
         rapidjson::Document args_doc;
         rapidjson::ParseResult ok = args_doc.Parse(args_json.data(), args_json.size());
-        if (!ok) return arrow::Status{arrow::StatusCode::Invalid, rapidjson::GetParseError_En(ok.Code())};
-        if (!args_doc.IsArray()) return arrow::Status{arrow::StatusCode::Invalid, "Arguments must be given as array"};
+        if (!ok) return web::Status{web::StatusCode::Invalid, rapidjson::GetParseError_En(ok.Code())};
+        if (!args_doc.IsArray()) return web::Status{web::StatusCode::Invalid, "Arguments must be given as array"};
 
         duckdb::vector<duckdb::Value> values;
         size_t index = 0;
@@ -421,51 +498,51 @@ arrow::Result<duckdb::unique_ptr<duckdb::QueryResult>> WebDB::Connection::Execut
             else if (v.IsBool())
                 values.emplace_back(v.GetBool());
             else
-                return arrow::Status{arrow::StatusCode::Invalid,
-                                     "Invalid column type encountered for argument " + std::to_string(index)};
+                return web::Status{web::StatusCode::Invalid,
+                                   "Invalid column type encountered for argument " + std::to_string(index)};
             ++index;
         }
 
-        auto result = stmt->second->Execute(values);
-        if (result->HasError()) return arrow::Status{arrow::StatusCode::ExecutionError, std::move(result->GetError())};
+        auto result = allow_stream_result ? stmt->second->Submit(values) : stmt->second->Execute(values);
+        if (result->HasError()) return web::Status{web::StatusCode::ExecutionError, result->GetError()};
         return result;
     } catch (std::exception& e) {
-        return arrow::Status{arrow::StatusCode::ExecutionError, e.what()};
+        return web::Status{web::StatusCode::ExecutionError, e.what()};
     }
 }
 
-arrow::Result<std::shared_ptr<arrow::Buffer>> WebDB::Connection::RunPreparedStatement(size_t statement_id,
-                                                                                      std::string_view args_json) {
-    auto result = ExecutePreparedStatement(statement_id, args_json);
+web::Result<std::shared_ptr<web::Buffer>> WebDB::Connection::RunPreparedStatement(size_t statement_id,
+                                                                                  std::string_view args_json) {
+    auto result = ExecutePreparedStatement(statement_id, args_json, false);
     if (!result.ok()) return result.status();
     return MaterializeQueryResult(std::move(*result));
 }
 
-arrow::Result<std::shared_ptr<arrow::Buffer>> WebDB::Connection::SendPreparedStatement(size_t statement_id,
-                                                                                       std::string_view args_json) {
-    auto result = ExecutePreparedStatement(statement_id, args_json);
+web::Result<std::shared_ptr<web::Buffer>> WebDB::Connection::SendPreparedStatement(size_t statement_id,
+                                                                                   std::string_view args_json) {
+    auto result = ExecutePreparedStatement(statement_id, args_json, true);
     if (!result.ok()) return result.status();
     return StreamQueryResult(std::move(*result));
 }
 
-arrow::Status WebDB::Connection::ClosePreparedStatement(size_t statement_id) {
+web::Status WebDB::Connection::ClosePreparedStatement(size_t statement_id) {
     auto it = prepared_statements_.find(statement_id);
     if (it == prepared_statements_.end())
-        return arrow::Status{arrow::StatusCode::KeyError, "No prepared statement found with ID"};
+        return web::Status{web::StatusCode::KeyError, "No prepared statement found with ID"};
     prepared_statements_.erase(it);
-    return arrow::Status::OK();
+    return web::Status::OK();
 }
 
-arrow::Status WebDB::Connection::CreateScalarFunction(std::string_view def_json) {
+web::Status WebDB::Connection::CreateScalarFunction(std::string_view def_json) {
     // Read the function definiton
     rapidjson::Document def_doc;
     def_doc.Parse(def_json.data(), def_json.size());
     auto def = duckdb::make_shared_ptr<UDFFunctionDeclaration>();
-    ARROW_RETURN_NOT_OK(def->ReadFrom(def_doc));
+    WEB_RETURN_NOT_OK(def->ReadFrom(def_doc));
 
     // Read return type
     auto name = def->name;
-    ARROW_ASSIGN_OR_RAISE(auto ret_type, mapArrowTypeToDuckDB(*def->return_type));
+    auto ret_type = def->return_type;
 
     // UDF lambda
     auto udf = [&, udf = std::move(def)](DataChunk& chunk, ExpressionState& state, Vector& vec) {
@@ -476,29 +553,20 @@ arrow::Status WebDB::Connection::CreateScalarFunction(std::string_view def_json)
     };
 
     // Register the vectorized function
-    connection_.CreateVectorizedFunction(name, vector<LogicalType>{}, ret_type, udf, LogicalType::ANY);
-    return arrow::Status::OK();
+    ScalarFunction scalar_function(Identifier(name), vector<LogicalType>{}, ret_type, udf, nullptr, nullptr, nullptr,
+                                   LogicalType::ANY);
+    scalar_function.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+    CreateScalarFunctionInfo info(std::move(scalar_function));
+    connection_.context->RegisterFunction(info);
+    return web::Status::OK();
 }
 
-#ifndef EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
 void duckdb_web_udf_scalar_call(WASMResponse*, size_t, const void*, size_t, const void*, size_t) {}
 #else
 extern "C" void duckdb_web_udf_scalar_call(WASMResponse* response, size_t function_id, const void* desc_buf,
                                            size_t desc_size, const void* ptrs_buf, size_t ptrs_size);
 #endif
-
-namespace {
-
-class SharedVectorBuffer : public VectorBuffer {
-   protected:
-    std::unique_ptr<char[]> data;
-
-   public:
-    explicit SharedVectorBuffer(std::unique_ptr<char[]> data)
-        : VectorBuffer(VectorBufferType::STANDARD_BUFFER), data(std::move(data)) {}
-};
-
-}  // namespace
 
 typedef vector<unique_ptr<data_t[]>> additional_buffers_t;
 
@@ -512,8 +580,8 @@ static data_ptr_t create_additional_buffer(vector<double>& data_ptrs, additional
 }
 
 // this talks to udf_runtime.ts, changes need to be mirrored there
-arrow::Status WebDB::Connection::CallScalarUDFFunction(UDFFunctionDeclaration& function, DataChunk& chunk,
-                                                       ExpressionState& state, Vector& out) {
+web::Status WebDB::Connection::CallScalarUDFFunction(UDFFunctionDeclaration& function, DataChunk& chunk,
+                                                     ExpressionState& state, Vector& out) {
     auto data_size = chunk.size();
     vector<string> type_desc;
 
@@ -528,7 +596,7 @@ arrow::Status WebDB::Connection::CallScalarUDFFunction(UDFFunctionDeclaration& f
     rapidjson::Document desc_doc;
     {
         auto json_alloc = desc_doc.GetAllocator();
-        ARROW_ASSIGN_OR_RAISE(auto args, json::CreateDataView(desc_doc, chunk, data_ptrs, additional_buffers));
+        WEB_ASSIGN_OR_RAISE(auto args, json::CreateDataView(desc_doc, chunk, data_ptrs, additional_buffers));
         desc_doc.SetObject().AddMember("args", args, desc_doc.GetAllocator());
         desc_doc.AddMember("rows", chunk.size(), json_alloc);
         rapidjson::Value ret{rapidjson::kObjectType};
@@ -544,14 +612,17 @@ arrow::Status WebDB::Connection::CallScalarUDFFunction(UDFFunctionDeclaration& f
 
     // actually call the UDF
     WASMResponse response;
-    duckdb_web_udf_scalar_call(&response, function.function_id, desc_buffer.GetString(), desc_buffer.GetLength(),
-                               data_ptrs.data(), data_ptrs.size() * sizeof(uint64_t));
+    // The UDF lives in the JavaScript context of the main thread
+    main_thread::OnMainThread([&] {
+        duckdb_web_udf_scalar_call(&response, function.function_id, desc_buffer.GetString(), desc_buffer.GetLength(),
+                                   data_ptrs.data(), data_ptrs.size() * sizeof(uint64_t));
+    });
     // UDF call failed?
     if (response.statusCode != 0) {
         uintptr_t err_ptr = response.dataOrValue;
         std::unique_ptr<char[]> err_buf{reinterpret_cast<char*>(err_ptr)};
         std::string err{err_buf.get(), static_cast<size_t>(response.dataSize)};
-        return arrow::Status::ExecutionError(err);
+        return web::Status::ExecutionError(err);
     }
 
     // Unpack result buffer, first entry is data, second is validity, third is length (strings/lists)
@@ -566,7 +637,7 @@ arrow::Status WebDB::Connection::CallScalarUDFFunction(UDFFunctionDeclaration& f
     // basically inverse of what happens above for strings
     if (out.GetType().id() == LogicalTypeId::VARCHAR) {
         auto string_ptr_buf = reinterpret_cast<double*>(static_cast<uintptr_t>(res_arr[0]));
-        auto out_string_ptr = FlatVector::GetData<string_t>(out);
+        auto out_string_ptr = FlatVector::GetDataMutable<string_t>(out);
         auto len_buf = reinterpret_cast<double*>(static_cast<uintptr_t>(res_arr[2]));
         for (idx_t row_idx = 0; row_idx < chunk.size(); row_idx++) {
             if (!validity_arr[row_idx]) {
@@ -578,81 +649,79 @@ arrow::Status WebDB::Connection::CallScalarUDFFunction(UDFFunctionDeclaration& f
 
     } else {
         auto res_buf = reinterpret_cast<char*>(static_cast<uintptr_t>(res_arr[0]));
-        auto shared_buffer = duckdb::make_shared_ptr<SharedVectorBuffer>(std::unique_ptr<char[]>{res_buf});
-        out.SetAuxiliary(shared_buffer);
-        duckdb::FlatVector::SetData(out, (data_ptr_t)res_buf);
+        // FIXME: the result buffer used to be handed over to the vector, after the bump to DuckDB v2.0 it is copied
+        std::unique_ptr<char[]> owned_buffer{res_buf};
+        std::memcpy(FlatVector::GetDataMutable(out), res_buf,
+                    GetTypeIdSize(out.GetType().InternalType()) * chunk.size());
     }
 
     free(validity_arr);
     free(res_arr);
-    return arrow::Status::OK();
+    return web::Status::OK();
 }
 
 /// Insert a record batch
-arrow::Status WebDB::Connection::InsertArrowFromIPCStream(nonstd::span<const uint8_t> stream,
-                                                          std::string_view options_json) {
+web::Status WebDB::Connection::InsertArrowFromIPCStream(nonstd::span<const uint8_t> stream,
+                                                        std::string_view options_json) {
     try {
         // First call?
-        if (!arrow_ipc_stream_) {
-            arrow_insert_options_.reset();
-
+        if (!arrow_insert_options_) {
             /// Read table options.
-            /// We deliberately do this BEFORE creating the ipc stream.
+            /// We deliberately do this BEFORE buffering the ipc stream.
             /// This ensures that we always have valid options.
             rapidjson::Document options_doc;
             options_doc.Parse(options_json.data(), options_json.size());
             ArrowInsertOptions options;
-            ARROW_RETURN_NOT_OK(options.ReadFrom(options_doc));
+            WEB_RETURN_NOT_OK(options.ReadFrom(options_doc));
             arrow_insert_options_ = options;
-
-            // Create the IPC stream
-            arrow_ipc_stream_ = std::make_unique<BufferingArrowIPCStreamDecoder>();
+            arrow_ipc_stream_.clear();
+            arrow_ipc_stream_scanned_ = 0;
         }
 
-        /// Consume stream bytes
-        ARROW_RETURN_NOT_OK(arrow_ipc_stream_->Consume(stream.data(), stream.size()));
-        if (!arrow_ipc_stream_->buffer()->is_eos()) {
-            return arrow::Status::OK();
+        /// Buffer the stream bytes until the end of the stream, which may take several calls
+        arrow_ipc_stream_.insert(arrow_ipc_stream_.end(), stream.begin(), stream.end());
+        WEB_ASSIGN_OR_RAISE(auto complete, ArrowIPCStreamComplete(arrow_ipc_stream_, arrow_ipc_stream_scanned_));
+        if (!complete) {
+            return web::Status::OK();
         }
-        assert(arrow_insert_options_);
 
-        /// Execute the arrow scan
-        vector<Value> params;
-        params.push_back(duckdb::Value::POINTER(reinterpret_cast<uintptr_t>(&arrow_ipc_stream_->buffer())));
-        params.push_back(
-            duckdb::Value::POINTER(reinterpret_cast<uintptr_t>(&ArrowIPCStreamBufferReader::CreateStream)));
-        params.push_back(duckdb::Value::POINTER(reinterpret_cast<uintptr_t>(&ArrowIPCStreamBufferReader::GetSchema)));
-        auto func = connection_.TableFunction("arrow_scan", params);
+        /// Scan the buffered stream with duckdb-nanoarrow
+        child_list_t<Value> buffer_struct;
+        buffer_struct.emplace_back("ptr", Value::POINTER(reinterpret_cast<uintptr_t>(arrow_ipc_stream_.data())));
+        buffer_struct.emplace_back("size", Value::UBIGINT(arrow_ipc_stream_.size()));
+        auto buffer_value = Value::STRUCT(std::move(buffer_struct));
+        auto buffers = Value::LIST(buffer_value.type(), {buffer_value});
+        auto func = connection_.TableFunction("scan_arrow_ipc", vector<Value>{std::move(buffers)});
 
         /// Create or insert
         if (arrow_insert_options_->create_new) {
-            func->Create(arrow_insert_options_->schema_name, arrow_insert_options_->table_name);
+            func->Create(Identifier(arrow_insert_options_->schema_name), Identifier(arrow_insert_options_->table_name));
         } else {
-            func->Insert(arrow_insert_options_->schema_name, arrow_insert_options_->table_name);
+            func->Insert(Identifier(arrow_insert_options_->schema_name), Identifier(arrow_insert_options_->table_name));
         }
 
         // Reset the ipc stream
         arrow_insert_options_.reset();
-        arrow_ipc_stream_.reset();
+        arrow_ipc_stream_.clear();
     } catch (const std::exception& e) {
         arrow_insert_options_.reset();
-        arrow_ipc_stream_.reset();
-        return arrow::Status::UnknownError(e.what());
+        arrow_ipc_stream_.clear();
+        return web::Status::UnknownError(e.what());
     }
-    return arrow::Status::OK();
+    return web::Status::OK();
 }
 /// Import a csv file
-arrow::Status WebDB::Connection::InsertCSVFromPath(std::string_view path, std::string_view options_json) {
+web::Status WebDB::Connection::InsertCSVFromPath(std::string_view path, std::string_view options_json) {
     try {
         /// Read table options
         rapidjson::Document options_doc;
         options_doc.Parse(options_json.data(), options_json.size());
         csv::CSVInsertOptions options;
-        ARROW_RETURN_NOT_OK(options.ReadFrom(options_doc));
+        WEB_RETURN_NOT_OK(options.ReadFrom(options_doc));
 
         /// Get table name and schema
         auto schema_name = options.schema_name.empty() ? "main" : options.schema_name;
-        if (options.table_name.empty()) return arrow::Status::Invalid("missing 'name' option");
+        if (options.table_name.empty()) return web::Status::Invalid("missing 'name' option");
 
         // Pack the unnamed parameters
         std::vector<Value> unnamed_params;
@@ -682,13 +751,7 @@ arrow::Status WebDB::Connection::InsertCSVFromPath(std::string_view path, std::s
             named_params.insert({"timestampformat", Value(*options.timestampformat)});
         }
         if (options.columns.has_value()) {
-            child_list_t<Value> columns;
-            columns.reserve(options.columns.value().size());
-            for (auto& col : options.columns.value()) {
-                ARROW_ASSIGN_OR_RAISE(auto type, mapArrowTypeToDuckDB(*col->type()));
-                columns.push_back(make_pair(col->name(), Value(type.ToString())));
-            }
-            named_params.insert({"columns", Value::STRUCT(std::move(columns))});
+            named_params.insert({"columns", ColumnTypesValue(*options.columns)});
         }
         named_params.insert({"auto_detect", Value::BOOLEAN(options.auto_detect.value_or(true))});
 
@@ -698,64 +761,94 @@ arrow::Status WebDB::Connection::InsertCSVFromPath(std::string_view path, std::s
 
         /// Create or insert
         if (options.create_new) {
-            func->Create(options.schema_name, options.table_name);
+            func->Create(Identifier(options.schema_name), Identifier(options.table_name));
         } else {
-            func->Insert(options.schema_name, options.table_name);
+            func->Insert(Identifier(options.schema_name), Identifier(options.table_name));
         }
 
     } catch (const std::exception& e) {
-        return arrow::Status::UnknownError(e.what());
+        return web::Status::UnknownError(e.what());
     }
-    return arrow::Status::OK();
+    return web::Status::OK();
 }
 
 /// Import a json file
-arrow::Status WebDB::Connection::InsertJSONFromPath(std::string_view path, std::string_view options_json) {
+web::Status WebDB::Connection::InsertJSONFromPath(std::string_view path, std::string_view options_json) {
     try {
         /// Read table options
         rapidjson::Document options_doc;
         options_doc.Parse(options_json.data(), options_json.size());
         json::JSONInsertOptions options;
-        ARROW_RETURN_NOT_OK(options.ReadFrom(options_doc));
+        WEB_RETURN_NOT_OK(options.ReadFrom(options_doc));
 
         /// Get table name and schema
         auto schema_name = options.schema_name.empty() ? "main" : options.schema_name;
-        if (options.table_name.empty()) return arrow::Status::Invalid("missing 'name' option");
+        if (options.table_name.empty()) return web::Status::Invalid("missing 'name' option");
 
-        // Create the input file stream
-        auto ifs = duckdb::make_uniq<io::InputFileStream>(webdb_.file_page_buffer_, path);
-        // Do we need to run the analyzer?
-        json::TableType table_type;
-        if (!options.table_shape || options.table_shape == json::JSONTableShape::UNRECOGNIZED ||
-            options.auto_detect.value_or(false)) {
-            io::InputFileStream ifs_copy{*ifs};
-            ARROW_RETURN_NOT_OK(json::InferTableType(ifs_copy, table_type));
-
-        } else {
-            table_type.shape = *options.table_shape;
-            table_type.type = arrow::struct_(options.columns.value_or(std::vector<std::shared_ptr<arrow::Field>>{}));
+        /// Detect the table shape from the first character unless it is given
+        auto shape = options.table_shape.value_or(json::JSONTableShape::UNRECOGNIZED);
+        if (shape == json::JSONTableShape::UNRECOGNIZED || options.auto_detect.value_or(false)) {
+            io::InputFileStream ifs{webdb_.file_page_buffer_, path};
+            char c;
+            while (ifs.get(c) && std::isspace(static_cast<unsigned char>(c))) {
+            }
+            if (!ifs) return web::Status::Invalid("JSON document is empty");
+            if (c == '[') {
+                shape = json::JSONTableShape::ROW_ARRAY;
+            } else if (c == '{') {
+                shape = json::JSONTableShape::COLUMN_OBJECT;
+            } else {
+                return web::Status::Invalid("JSON document is neither an array of rows nor an object of columns");
+            }
         }
-        // Resolve the table reader
-        ARROW_ASSIGN_OR_RAISE(auto table_reader, json::TableReader::Resolve(std::move(ifs), table_type));
 
-        /// Execute the arrow scan
-        vector<Value> params;
-        params.push_back(duckdb::Value::POINTER(reinterpret_cast<uintptr_t>(&table_reader)));
-        params.push_back(duckdb::Value::POINTER(reinterpret_cast<uintptr_t>(json::TableReader::CreateStream)));
-        params.push_back(duckdb::Value::POINTER(reinterpret_cast<uintptr_t>(json::TableReader::GetSchema)));
-        auto func = connection_.TableFunction("arrow_scan", params);
+        /// Read the document with read_json
+        std::vector<Value> unnamed_params;
+        unnamed_params.emplace_back(std::string{path});
+        std::unordered_map<std::string, Value> named_params;
+        shared_ptr<Relation> rel;
+        if (shape == json::JSONTableShape::ROW_ARRAY) {
+            // [{"a":1,"b":2}, {"a":3,"b":4}]
+            named_params.insert({"format", Value("array")});
+            if (options.columns.has_value()) {
+                named_params.insert({"columns", ColumnTypesValue(*options.columns)});
+            }
+            rel = duckdb::make_shared_ptr<TableFunctionRelation>(connection_.context, "read_json",
+                                                                 std::move(unnamed_params), named_params);
+        } else {
+            // {"a":[1,3],"b":[2,4]}: a single record of lists that is unnested into rows
+            named_params.insert({"format", Value("unstructured")});
+            named_params.insert({"records", Value("true")});
+            named_params.insert({"maximum_depth", Value::BIGINT(-1)});
+            if (options.columns.has_value()) {
+                child_list_t<LogicalType> list_columns;
+                for (auto& col : *options.columns) {
+                    list_columns.emplace_back(col.first, LogicalType::LIST(col.second));
+                }
+                named_params.insert({"columns", ColumnTypesValue(list_columns)});
+            }
+            rel = duckdb::make_shared_ptr<TableFunctionRelation>(connection_.context, "read_json",
+                                                                 std::move(unnamed_params), named_params);
+            vector<string> unnest_columns;
+            for (auto& column : rel->Columns()) {
+                unnest_columns.push_back("unnest(" +
+                                         KeywordHelper::WriteQuoted(column.Name().GetIdentifierName(), '"') + ") AS " +
+                                         KeywordHelper::WriteQuoted(column.Name().GetIdentifierName(), '"'));
+            }
+            rel = rel->Project(unnest_columns);
+        }
 
         /// Create or insert
         if (options.create_new) {
-            func->Create(schema_name, options.table_name);
+            rel->Create(Identifier(schema_name), Identifier(options.table_name));
         } else {
-            func->Insert(schema_name, options.table_name);
+            rel->Insert(Identifier(schema_name), Identifier(options.table_name));
         }
 
     } catch (const std::exception& e) {
-        return arrow::Status::UnknownError(e.what());
+        return web::Status::UnknownError(e.what());
     }
-    return arrow::Status::OK();
+    return web::Status::OK();
 }
 
 // Register custom extension options in DuckDB for options that are handled in DuckDB-WASM instead of DuckDB
@@ -864,7 +957,7 @@ WebDB::~WebDB() { pinned_web_files_.clear(); }
 /// Tokenize a script and return tokens as json
 std::string WebDB::Tokenize(std::string_view text) {
     // Tokenize the text
-    duckdb::Parser parser;
+    auto parser = duckdb::Parser::GetBuiltinParser();
     auto tokens = parser.Tokenize(std::string{text});
     // Encode the tokens as json
     rapidjson::Document doc;
@@ -883,6 +976,14 @@ std::string WebDB::Tokenize(std::string_view text) {
     rapidjson::Writer<rapidjson::StringBuffer> writer{strbuf};
     doc.Accept(writer);
     return strbuf.GetString();
+}
+
+/// Are queries executing?
+bool WebDB::QueriesInFlight() const {
+    for (auto& [ptr, conn] : connections_) {
+        if (conn->InFlight()) return true;
+    }
+    return false;
 }
 
 /// Get the version
@@ -947,16 +1048,26 @@ void WebDB::FlushFiles() { file_page_buffer_->FlushFiles(); }
 void WebDB::FlushFile(std::string_view path) { file_page_buffer_->FlushFile(path); }
 
 /// Reset the database
-arrow::Status WebDB::Reset() {
+web::Status WebDB::Reset() {
     DEBUG_TRACE();
-    return Open();
+    // The database is opened again with the configuration it was opened with; what SET changed since (the S3
+    // settings among them) starts over
+    auto config = *config_;
+    config.duckdb_config_options = WebDBConfig::ReadFrom("").duckdb_config_options;
+    return OpenWithConfig(std::move(config));
 }
 
 /// Open a database
-arrow::Status WebDB::Open(std::string_view args_json) {
+web::Status WebDB::Open(std::string_view args_json) {
     DEBUG_TRACE();
     assert(config_ != nullptr);
-    *config_ = WebDBConfig::ReadFrom(args_json);
+    return OpenWithConfig(WebDBConfig::ReadFrom(args_json));
+}
+
+/// Open a database with a configuration
+web::Status WebDB::OpenWithConfig(WebDBConfig config) {
+    assert(config_ != nullptr);
+    *config_ = std::move(config);
     bool in_memory = config_->path == ":memory:" || config_->path == "";
     AccessMode access_mode = in_memory ? AccessMode::AUTOMATIC : AccessMode::READ_ONLY;
     if (config_->access_mode.has_value()) {
@@ -969,32 +1080,66 @@ arrow::Status WebDB::Open(std::string_view args_json) {
         auto buffered_fs_ptr = buffered_fs.get();
 
         duckdb::DBConfig db_config;
-        db_config.file_system = std::move(make_uniq<VirtualFileSystem>(std::move(buffered_fs)));
+        auto virtual_fs = make_uniq<VirtualFileSystem>(std::move(buffered_fs));
+        // Remote files are read by the web file system too, DuckDB needs a sub file system to claim them
+        virtual_fs->RegisterSubSystem(make_uniq<io::RemoteWebFileSystem>(*buffered_fs_ptr));
+        db_config.file_system = std::move(virtual_fs);
         db_config.SetOptionByName("allow_unsigned_extensions", config_->allow_unsigned_extensions);
+        if (config_->extension_repository.has_value()) {
+            db_config.SetOptionByName("custom_extension_repository",
+                                      duckdb::Value(config_->extension_repository.value()));
+        }
         db_config.SetOption("arrow_lossless_conversion", config_->arrow_lossless_conversion);
         db_config.options.maximum_threads = config_->maximum_threads;
         // Set external_threads to match maximum_threads for WASM environment
         // This ensures all threads are available for external operations (HTTP, IO, etc.)
         // Since DuckDB v1.5, external_threads is a named setting rather than a DBConfigOptions member.
         db_config.SetOptionByName("external_threads", duckdb::Value::UBIGINT(config_->maximum_threads));
-        db_config.options.use_temporary_directory = false;
+        // The async pool would default to 4x the core count: pthreads come from a fixed pool of workers, and a
+        // thread created beyond it from the blocked main thread never starts
+        db_config.options.async_threads = 0;
+        // Spilling needs a file system that can create files during a query, the runtime passes a directory
+        // when it has one
+        db_config.options.use_temporary_directory = config_->temporary_directory.has_value();
+        if (config_->temporary_directory.has_value()) {
+            db_config.options.temporary_directory = config_->temporary_directory.value();
+        }
         db_config.options.access_mode = access_mode;
         db_config.SetOptionByName("duckdb_api", "wasm");
+        if (config_->home_directory.has_value()) {
+            auto& home = config_->home_directory.value();
+            db_config.SetOptionByName("home_directory", duckdb::Value(home));
+            // The secret manager derives its directory from the environment, not from the setting
+            db_config.SetOptionByName("secret_directory", duckdb::Value(home + "/.duckdb/stored_secrets"));
+        }
         db_config.options.custom_user_agent = config_->custom_user_agent;
-        db_config.options.use_direct_io = config_->use_direct_io;
+        // FIXME: use_direct_io is no longer a database-wide option in DuckDB v2.0 (now ATTACH ... (IO_MODE)),
+        // config_->use_direct_io is currently ignored
         auto db = make_shared_ptr<duckdb::DuckDB>(config_->path, &db_config);
 #ifndef WASM_LOADABLE_EXTENSIONS
         duckdb_web_parquet_init(db.get());
 #if defined(DUCKDB_JSON_EXTENSION)
         duckdb_web_json_init(db.get());
 #endif
+#if defined(DUCKDB_TPCH_EXTENSION)
+        duckdb_web_tpch_init(db.get());
+#endif
 #endif  // WASM_LOADABLE_EXTENSIONS
         RegisterCustomExtensionOptions(db);
 
         auto& config = duckdb::DBConfig::GetConfig(*db->instance);
-        if (!config.http_util || config.http_util->GetName() != string("WasmHTTPUtils")) {
-            config.http_util = make_shared_ptr<HTTPWasmUtil>();
+        if (config_->temporary_directory.has_value()) {
+            // DuckDB cannot measure the free space of the web file system (it reads 0 and would refuse to spill),
+            // the temporary directory is unlimited. The limit only reaches the buffer manager through the setting
+            // once the database exists.
+            auto swap_space = duckdb::DConstants::INVALID_INDEX - 1;
+            duckdb::BufferManager::GetBufferManager(*db->instance).SetSwapLimit(swap_space);
+            config.options.maximum_swap_space = swap_space;
         }
+
+#ifdef WASM_LOADABLE_EXTENSIONS
+        config.SetExternalExtensionProvider(make_shared_ptr<WasmExtensionProvider>());
+#endif
 
         if (!config.encryption_util) {
             config.encryption_util = make_shared_ptr<duckdb_mbedtls::MbedTlsWrapper::AESStateMBEDTLSFactory>();
@@ -1009,22 +1154,22 @@ arrow::Status WebDB::Open(std::string_view args_json) {
         buffered_filesystem_ = buffered_fs_ptr;
         database_ = std::move(db);
     } catch (std::exception& ex) {
-        return arrow::Status::Invalid("Opening the database failed with error: ", ex.what());
+        return web::Status::Invalid("Opening the database failed with error: ", ex.what());
     } catch (...) {
-        return arrow::Status::Invalid("Opening the database failed");
+        return web::Status::Invalid("Opening the database failed");
     }
-    return arrow::Status::OK();
+    return web::Status::OK();
 }
 /// Register a file URL
-arrow::Status WebDB::RegisterFileURL(std::string_view file_name, std::string_view file_url,
-                                     io::WebFileSystem::DataProtocol protocol, bool direct_io) {
+web::Status WebDB::RegisterFileURL(std::string_view file_name, std::string_view file_url,
+                                   io::WebFileSystem::DataProtocol protocol, bool direct_io) {
     // No web filesystem configured?
     auto web_fs = io::WebFileSystem::Get();
-    if (!web_fs) return arrow::Status::Invalid("WebFileSystem is not configured");
+    if (!web_fs) return web::Status::Invalid("WebFileSystem is not configured");
     // Try to drop the file in the buffered file system.
     // If that fails we have to give up since someone still holds an open file ref.
     if (!buffered_filesystem_->TryDropFile(file_name)) {
-        return arrow::Status::Invalid("File is already registered and is still buffered");
+        return web::Status::Invalid("File is already registered and is still buffered");
     }
     // Already pinned by us?
     // Unpin the file to re-register the new file.
@@ -1033,7 +1178,7 @@ arrow::Status WebDB::RegisterFileURL(std::string_view file_name, std::string_vie
     }
     // Register new file url in web filesystem.
     // Pin the file handle to keep the file alive.
-    ARROW_ASSIGN_OR_RAISE(auto file_hdl, web_fs->RegisterFileURL(file_name, file_url, protocol));
+    WEB_ASSIGN_OR_RAISE(auto file_hdl, web_fs->RegisterFileURL(file_name, file_url, protocol));
     pinned_web_files_.insert({file_hdl->GetName(), std::move(file_hdl)});
 
     // Register new file in buffered filesystem.
@@ -1041,18 +1186,18 @@ arrow::Status WebDB::RegisterFileURL(std::string_view file_name, std::string_vie
         .force_direct_io = direct_io,
     };
     buffered_filesystem_->RegisterFile(file_name, file_config);
-    return arrow::Status::OK();
+    return web::Status::OK();
 }
 /// Register a file URL
-arrow::Status WebDB::RegisterFileBuffer(std::string_view file_name, std::unique_ptr<char[]> buffer,
-                                        size_t buffer_length) {
+web::Status WebDB::RegisterFileBuffer(std::string_view file_name, std::unique_ptr<char[]> buffer,
+                                      size_t buffer_length) {
     // No web filesystem configured?
     auto web_fs = io::WebFileSystem::Get();
-    if (!web_fs) return arrow::Status::Invalid("WebFileSystem is not configured");
+    if (!web_fs) return web::Status::Invalid("WebFileSystem is not configured");
     // Try to drop the file in the buffered file system.
     // If that fails we have to give up since someone still holds an open file ref.
     if (!buffered_filesystem_->TryDropFile(file_name)) {
-        return arrow::Status::Invalid("File is already registered and is still buffered");
+        return web::Status::Invalid("File is already registered and is still buffered");
     }
     // Already pinned by us?
     // Unpin the file to re-register the new file.
@@ -1061,7 +1206,7 @@ arrow::Status WebDB::RegisterFileBuffer(std::string_view file_name, std::unique_
     }
     // Register new file in web filesystem
     io::WebFileSystem::DataBuffer data{std::move(buffer), buffer_length};
-    ARROW_ASSIGN_OR_RAISE(auto file_hdl, web_fs->RegisterFileBuffer(file_name, std::move(data)));
+    WEB_ASSIGN_OR_RAISE(auto file_hdl, web_fs->RegisterFileBuffer(file_name, std::move(data)));
     // Register new file in buffered filesystem to bypass the paging with direct i/o.
     io::BufferedFileSystem::FileConfig file_config = {
         .force_direct_io = true,
@@ -1069,43 +1214,41 @@ arrow::Status WebDB::RegisterFileBuffer(std::string_view file_name, std::unique_
     buffered_filesystem_->RegisterFile(file_name, file_config);
     // Pin the file handle to keep the file alive
     pinned_web_files_.insert({file_hdl->GetName(), std::move(file_hdl)});
-    return arrow::Status::OK();
+    return web::Status::OK();
 }
 /// Drop all files
-arrow::Status WebDB::DropFiles() {
+web::Status WebDB::DropFiles() {
     file_page_buffer_->DropDanglingFiles();
     std::vector<std::string> files_to_drop;
     for (const auto& [key, handle] : pinned_web_files_) {
         files_to_drop.push_back(handle->GetName());
     }
     for (const auto& fileName : files_to_drop) {
-        arrow::Status status = DropFile(fileName);
+        web::Status status = DropFile(fileName);
         if (!status.ok()) {
-            return arrow::Status::Invalid("Failed to drop file: " + fileName);
+            return web::Status::Invalid("Failed to drop file: " + fileName);
         }
     }
     if (auto fs = io::WebFileSystem::Get()) {
         fs->DropDanglingFiles();
     }
-    return arrow::Status::OK();
+    return web::Status::OK();
 }
 /// Drop a file
-arrow::Status WebDB::DropFile(std::string_view fileName) {
+web::Status WebDB::DropFile(std::string_view fileName) {
     file_page_buffer_->TryDropFile(fileName);
     pinned_web_files_.erase(fileName);
     if (auto fs = io::WebFileSystem::Get()) {
-        if (fs->TryDropFile(fileName)) {
-            fs->DropFile(fileName);
-        } else {
-            return arrow::Status::Invalid("file is in use");
-        }
+        // A file DuckDB still holds open (the sink of a finished COPY keeps its handle until the next query) is
+        // dropped once its last handle closes
+        fs->DropFileWhenClosed(fileName);
     }
-    return arrow::Status::OK();
+    return web::Status::OK();
 }
 /// Glob all known files
-arrow::Result<std::string> WebDB::GlobFileInfos(std::string_view expression) {
+web::Result<std::string> WebDB::GlobFileInfos(std::string_view expression) {
     auto web_fs = io::WebFileSystem::Get();
-    if (!web_fs) return arrow::Status::Invalid("WebFileSystem is not configured");
+    if (!web_fs) return web::Status::Invalid("WebFileSystem is not configured");
     auto files = web_fs->Glob(std::string{expression});
     auto current_epoch = web_fs->LoadCacheEpoch();
 
@@ -1123,9 +1266,9 @@ arrow::Result<std::string> WebDB::GlobFileInfos(std::string_view expression) {
 }
 
 /// Get the global file info as JSON
-arrow::Result<std::string> WebDB::GetGlobalFileInfo(uint32_t cache_epoch) {
+web::Result<std::string> WebDB::GetGlobalFileInfo(uint32_t cache_epoch) {
     auto web_fs = io::WebFileSystem::Get();
-    if (!web_fs) return arrow::Status::Invalid("WebFileSystem is not configured");
+    if (!web_fs) return web::Status::Invalid("WebFileSystem is not configured");
 
     // Write file info
     rapidjson::Document doc;
@@ -1142,9 +1285,9 @@ arrow::Result<std::string> WebDB::GetGlobalFileInfo(uint32_t cache_epoch) {
 }
 
 /// Get the file info as JSON
-arrow::Result<std::string> WebDB::GetFileInfo(uint32_t file_id, uint32_t cache_epoch) {
+web::Result<std::string> WebDB::GetFileInfo(uint32_t file_id, uint32_t cache_epoch) {
     auto web_fs = io::WebFileSystem::Get();
-    if (!web_fs) return arrow::Status::Invalid("WebFileSystem is not configured");
+    if (!web_fs) return web::Status::Invalid("WebFileSystem is not configured");
 
     // Write file info
     rapidjson::Document doc;
@@ -1160,9 +1303,9 @@ arrow::Result<std::string> WebDB::GetFileInfo(uint32_t file_id, uint32_t cache_e
     return strbuf.GetString();
 }
 /// Get the file info as JSON
-arrow::Result<std::string> WebDB::GetFileInfo(std::string_view file_name, uint32_t cache_epoch) {
+web::Result<std::string> WebDB::GetFileInfo(std::string_view file_name, uint32_t cache_epoch) {
     auto web_fs = io::WebFileSystem::Get();
-    if (!web_fs) return arrow::Status::Invalid("WebFileSystem is not configured");
+    if (!web_fs) return web::Status::Invalid("WebFileSystem is not configured");
 
     // Write file info
     rapidjson::Document doc;
@@ -1178,25 +1321,25 @@ arrow::Result<std::string> WebDB::GetFileInfo(std::string_view file_name, uint32
     return strbuf.GetString();
 }
 /// Enable file statistics
-arrow::Status WebDB::CollectFileStatistics(std::string_view path, bool enable) {
+web::Status WebDB::CollectFileStatistics(std::string_view path, bool enable) {
     auto stats = file_stats_->EnableCollector(path, enable);
     if (auto web_fs = io::WebFileSystem::Get()) {
         web_fs->CollectFileStatistics(path, stats);
     }
     file_page_buffer_->CollectFileStatistics(path, std::move(stats));
-    return arrow::Status::OK();
+    return web::Status::OK();
 }
 /// Export file page statistics
-arrow::Result<std::shared_ptr<arrow::Buffer>> WebDB::ExportFileStatistics(std::string_view path) {
+web::Result<std::shared_ptr<web::Buffer>> WebDB::ExportFileStatistics(std::string_view path) {
     return file_stats_->ExportStatistics(path);
 }
 
 /// Copy a file to a buffer
-arrow::Result<std::shared_ptr<arrow::Buffer>> WebDB::CopyFileToBuffer(std::string_view path) {
+web::Result<std::shared_ptr<web::Buffer>> WebDB::CopyFileToBuffer(std::string_view path) {
     auto& fs = filesystem();
     auto src = fs.OpenFile(std::string{path}, duckdb::FileFlags::FILE_FLAGS_READ);
     auto n = fs.GetFileSize(*src);
-    ARROW_ASSIGN_OR_RAISE(auto buffer, arrow::AllocateResizableBuffer(n));
+    auto buffer = web::Buffer::Allocate(n);
 
     auto writer = buffer->mutable_data();
     while (n > 0) {
@@ -1206,12 +1349,12 @@ arrow::Result<std::shared_ptr<arrow::Buffer>> WebDB::CopyFileToBuffer(std::strin
         if (m == 0) break;
     }
 
-    ARROW_RETURN_NOT_OK(buffer->Resize(writer - buffer->data()));
+    buffer->Resize(writer - buffer->data());
     return buffer;
 }
 
 /// Copy a file to a path
-arrow::Status WebDB::CopyFileToPath(std::string_view path, std::string_view out) {
+web::Status WebDB::CopyFileToPath(std::string_view path, std::string_view out) {
     auto& fs = filesystem();
     auto src = fs.OpenFile(std::string{path}, duckdb::FileFlags::FILE_FLAGS_READ);
     auto dst = fs.OpenFile(std::string{path},
@@ -1230,7 +1373,7 @@ arrow::Status WebDB::CopyFileToPath(std::string_view path, std::string_view out)
     }
     fs.FileSync(*dst);
 
-    return arrow::Status::OK();
+    return web::Status::OK();
 }
 
 }  // namespace web

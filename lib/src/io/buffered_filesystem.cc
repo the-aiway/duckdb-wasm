@@ -5,7 +5,9 @@
 #include <string>
 #include <vector>
 
+#include "duckdb/common/compressed_file_system.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/web/io/buffered_filesystem.h"
 #include "duckdb/web/io/file_page_buffer.h"
@@ -87,9 +89,11 @@ duckdb::unique_ptr<duckdb::FileHandle> BufferedFileSystem::OpenFile(const string
     auto path = PatchFilenameOwned(raw_path);
     std::unique_lock<LightMutex> fs_guard{directory_mutex_};
 
-    // Bypass the buffering?
+    // Bypass the buffering? OPFS files always do: their access handles write through, and the file may be
+    // moved into place between queries. js_buffer:// files are memory already, DuckDB's spilled blocks among them
     auto iter = file_configs_.find(path);
-    if (flags.DirectIO() || (iter != file_configs_.end() && iter->second.force_direct_io)) {
+    if (flags.DirectIO() || (iter != file_configs_.end() && iter->second.force_direct_io) ||
+        path.rfind("opfs://", 0) == 0 || path.rfind("js_buffer://", 0) == 0) {
         return filesystem_.OpenFile(path, flags, opener);
     }
 
@@ -246,13 +250,20 @@ void BufferedFileSystem::RemoveFile(const std::string &raw_filename, optional_pt
     return filesystem_.RemoveFile(filename);
 }
 
+/// Canonicalize a path - preserve opfs:// protocol prefix (double slash) which DuckDB's
+/// base CanonicalizePath would collapse to opfs:/ since opfs:// is not in EXTENSION_FILE_PREFIXES.
+/// opfs:// is a local file that looks like a remote file, so IsRemoteFile won't short-circuit it.
+string BufferedFileSystem::CanonicalizePath(const string &path_p, optional_ptr<FileOpener> opener) {
+    if (StringUtil::StartsWith(path_p, "opfs://")) {
+        return path_p;
+    }
+    return filesystem_.CanonicalizePath(path_p, opener);
+}
+
 /// Register subsystem
 void BufferedFileSystem::RegisterSubSystem(unique_ptr<FileSystem> sub_fs) { (void)sub_fs; }
-/// Register subsystem
-void BufferedFileSystem::RegisterSubSystem(FileCompressionType compression_type, unique_ptr<FileSystem> sub_fs) {
-    (void)compression_type;
-    (void)sub_fs;
-}
+/// Register compression filesystem
+void BufferedFileSystem::RegisterCompressionFilesystem(unique_ptr<CompressedFileSystem> fs) { (void)fs; }
 
 /// Set the file pointer of a file handle to a specified location. Reads and writes will happen from this location
 void BufferedFileSystem::Seek(duckdb::FileHandle &handle, idx_t location) {

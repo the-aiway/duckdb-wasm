@@ -2,6 +2,7 @@ import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import { Versus } from './pages/versus';
 import { Shell } from './pages/shell';
+import { localExtensionConfig } from './local_extensions';
 import { Route, Routes, Navigate, BrowserRouter } from 'react-router-dom';
 import { NavBarContainer } from './components/navbar';
 import { DuckDBConnectionProvider, DuckDBPlatform, DuckDBProvider } from '@duckdb/react-duckdb';
@@ -13,24 +14,19 @@ import 'xterm/css/xterm.css';
 import 'react-popper-tooltip/dist/styles.css';
 
 import * as duckdb from '@duckdb/duckdb-wasm';
-import duckdb_wasm from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm';
-import duckdb_wasm_eh from '@duckdb/duckdb-wasm/dist/duckdb-eh.wasm';
-import duckdb_wasm_coi from '@duckdb/duckdb-wasm/dist/duckdb-coi.wasm';
+import duckdb_wasm_base from '@duckdb/duckdb-wasm/dist/duckdb-base.wasm';
+import duckdb_wasm_threads from '@duckdb/duckdb-wasm/dist/duckdb-threads.wasm';
 
 const DUCKDB_BUNDLES: duckdb.DuckDBBundles = {
-    mvp: {
-        mainModule: duckdb_wasm,
-        mainWorker: new URL('@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js', import.meta.url).toString(),
+    base: {
+        mainModule: duckdb_wasm_base,
+        mainWorker: new URL('@duckdb/duckdb-wasm/dist/duckdb-browser-base.worker.js', import.meta.url).toString(),
     },
-    eh: {
-        mainModule: duckdb_wasm_eh,
-        mainWorker: new URL('@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js', import.meta.url).toString(),
-    },
-    coi: {
-        mainModule: duckdb_wasm_coi,
-        mainWorker: new URL('@duckdb/duckdb-wasm/dist/duckdb-browser-coi.worker.js', import.meta.url).toString(),
+    threads: {
+        mainModule: duckdb_wasm_threads,
+        mainWorker: new URL('@duckdb/duckdb-wasm/dist/duckdb-browser-threads.worker.js', import.meta.url).toString(),
         pthreadWorker: new URL(
-            '@duckdb/duckdb-wasm/dist/duckdb-browser-coi.pthread.worker.js',
+            '@duckdb/duckdb-wasm/dist/duckdb-browser-threads.pthread.worker.js',
             import.meta.url,
         ).toString(),
     },
@@ -48,7 +44,7 @@ const element = document.getElementById('root');
 const root = createRoot(element!);
 root.render(
     <DuckDBPlatform logger={logger} bundles={DUCKDB_BUNDLES}>
-        <DuckDBProvider>
+        <DuckDBProvider config={localExtensionConfig(new URL(window.location.href))}>
             <DuckDBConnectionProvider>
                 <BrowserRouter basename={basename}>
                     <Routes>

@@ -14,12 +14,16 @@ LIB_RELEASE_DIR="${ROOT_DIR}/build/Release"
 LIB_RELWITHDEBINFO_DIR="${ROOT_DIR}/build/RelWithDebInfo"
 LIB_XRAY_DIR="${ROOT_DIR}/build/Xray"
 DUCKDB_WASM_DIR="${ROOT_DIR}/packages/duckdb/src/wasm"
-TARGET=eh
+TARGET=base
+GEN?=ninja
+PORT?=8081
 
 DUCKDB_HASH=${shell cd submodules/duckdb && git reflog -n 1 | head -c 10}
 
 CACHE_DIRS=${ROOT_DIR}/.ccache/ ${ROOT_DIR}/.emscripten_cache/
 DOCKER_EXEC_ENVIRONMENT=docker compose run duckdb-wasm-ci
+# Build natively when emcc is on the PATH, and in the CI image otherwise.
+EXEC_ENVIRONMENT:=$(if $(shell command -v emcc),,$(DOCKER_EXEC_ENVIRONMENT))
 
 CORES=$(shell grep -c ^processor /proc/cpuinfo 2>/dev/null || sysctl -n hw.ncpu)
 
@@ -28,26 +32,26 @@ JS_FILTER=
 
 EXTENSION_CACHE_DIR="${ROOT_DIR}/.ccache/extension"
 JSON_EXTENSION_CACHE_FILE="${EXTENSION_CACHE_DIR}/json"
+DUCKDB_HTTPFS_DIRECTORY?=
+DUCKDB_AWS_DIRECTORY?=
+DUCKDB_QUACK_DIRECTORY?=
+VCPKG_TOOLCHAIN_PATH?=${HOME}/vcpkg/scripts/buildsystems/vcpkg.cmake
 
 cpp_lib: lib_tests
 
 # ---------------------------------------------------------------------------
 # Build
 
-.PHONY: build_wasm_mvp
-build_wasm_mvp:
-	USE_GENERATED_EXPORTED_LIST=no DUCKDB_PLATFORM=wasm_mvp ./scripts/wasm_build_lib.sh relsize mvp
+.PHONY: build_wasm_base
+build_wasm_base:
+	USE_GENERATED_EXPORTED_LIST=no ./scripts/wasm_build_lib.sh relsize base
 
-.PHONY: build_wasm_eh
-build_wasm_eh:
-	USE_GENERATED_EXPORTED_LIST=no DUCKDB_PLATFORM=wasm_eh ./scripts/wasm_build_lib.sh relsize eh
-
-.PHONY: build_wasm_coi
-build_wasm_coi:
-	USE_GENERATED_EXPORTED_LIST=no DUCKDB_PLATFORM=wasm_threads ./scripts/wasm_build_lib.sh relsize coi
+.PHONY: build_wasm_threads
+build_wasm_threads:
+	USE_GENERATED_EXPORTED_LIST=no ./scripts/wasm_build_lib.sh relsize threads
 
 .PHONY: build_wasm_all
-build_wasm_all: build_wasm_mvp build_wasm_eh build_wasm_coi
+build_wasm_all: build_wasm_base build_wasm_threads
 
 # ---------------------------------------------------------------------------
 # Formatting
@@ -255,18 +259,14 @@ wrapped_wasm_caches:
 	touch build/wrapped_wasm_caches
 
 check_duckdb: $(DUCKDB_SOURCES)
-	(cd ${ROOT_DIR}/build/dev/mvp && make clean) || true
-	(cd ${ROOT_DIR}/build/dev/eh && make clean) || true
-	(cd ${ROOT_DIR}/build/dev/coi && make clean) || true
-	(cd ${ROOT_DIR}/build/relsize/mvp && make clean) || true
-	(cd ${ROOT_DIR}/build/relsize/eh && make clean) || true
-	(cd ${ROOT_DIR}/build/relsize/coi && make clean) || true
-	(cd ${ROOT_DIR}/build/relperf/mvp && make clean) || true
-	(cd ${ROOT_DIR}/build/relperf/eh && make clean) || true
-	(cd ${ROOT_DIR}/build/relperf/coi && make clean) || true
-	(cd ${ROOT_DIR}/build/debug/mvp && make clean) || true
-	(cd ${ROOT_DIR}/build/debug/eh && make clean) || true
-	(cd ${ROOT_DIR}/build/debug/coi && make clean) || true
+	(cd ${ROOT_DIR}/build/dev/base && make clean) || true
+	(cd ${ROOT_DIR}/build/dev/threads && make clean) || true
+	(cd ${ROOT_DIR}/build/relsize/base && make clean) || true
+	(cd ${ROOT_DIR}/build/relsize/threads && make clean) || true
+	(cd ${ROOT_DIR}/build/relperf/base && make clean) || true
+	(cd ${ROOT_DIR}/build/relperf/threads && make clean) || true
+	(cd ${ROOT_DIR}/build/debug/base && make clean) || true
+	(cd ${ROOT_DIR}/build/debug/threads && make clean) || true
 	touch check_duckdb
 
 wasm_setup: set_environment check_duckdb wrapped_wasm_caches
@@ -274,27 +274,23 @@ wasm_setup: set_environment check_duckdb wrapped_wasm_caches
 
 .PHONY: wasm_dev
 wasm_dev: wasm_setup
-	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh dev mvp
-	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh dev eh
-	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh dev coi
+	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh dev base
+	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh dev threads
 
 .PHONY: wasm_relperf
 wasm_relperf: wasm_setup
-	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh relperf mvp
-	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh relperf eh
-	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh relperf coi
+	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh relperf base
+	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh relperf threads
 
 .PHONY: wasm_relsize
 wasm_relsize: wasm_setup
-	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh relsize mvp
-	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh relsize eh
-	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh relsize coi
+	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh relsize base
+	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh relsize threads
 
 .PHONY: wasm_debug
 wasm_debug: wasm_setup
-	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh debug mvp
-	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh debug eh
-	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh debug coi
+	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh debug base
+	${EXEC_ENVIRONMENT} ${ROOT_DIR}/scripts/wasm_build_lib.sh debug threads
 
 wasm: wasm_relperf
 
@@ -377,8 +373,17 @@ app_start_corp:
 app: wasm wasmpack shell docs js_tests_release
 	yarn workspace @duckdb/duckdb-wasm-app build:release
 
+.PHONY: build_loadable build_loadable_threads
 build_loadable:
-	USE_GENERATED_EXPORTED_LIST=no DUCKDB_PLATFORM=wasm_${TARGET} DUCKDB_WASM_LOADABLE_EXTENSIONS=1 ./scripts/wasm_build_lib.sh relsize ${TARGET}
+	DUCKDB_HTTPFS_DIRECTORY="${DUCKDB_HTTPFS_DIRECTORY}" \
+	DUCKDB_AWS_DIRECTORY="${DUCKDB_AWS_DIRECTORY}" \
+	DUCKDB_QUACK_DIRECTORY="${DUCKDB_QUACK_DIRECTORY}" \
+	VCPKG_TOOLCHAIN_PATH="${VCPKG_TOOLCHAIN_PATH}" CORES="${CORES}" GEN="${GEN}" \
+	USE_GENERATED_EXPORTED_LIST=no DUCKDB_WASM_LOADABLE_EXTENSIONS=1 \
+		./scripts/wasm_build_lib.sh relsize ${TARGET}
+
+build_loadable_threads:
+	$(MAKE) build_loadable TARGET=threads
 
 build_loadable_unsigned: build_loadable
         # need to propagate the unsigned flag
@@ -388,12 +393,13 @@ serve_loadable_base: wasmpack shell docs
 	cp -r build/extension_repository packages/duckdb-wasm-app/build/release/.
 
 .PHONY: serve_local
-serve_local: build_loadable_unsigned serve_loadable_base
-	npx http-server packages/duckdb-wasm-app/build/release -o "/original.html#queries=v0,SET-custom_extension_repository%3D'http%3A%2F%2F127.0.0.1%3A8080%2Fextension_repository'~" -a 127.0.0.1 -p 8080
+serve_local: build_loadable_threads build_loadable
+	$(MAKE) serve_loadable_base
+	npx http-server packages/duckdb-wasm-app/build/release -c-1 -o '/original.html?local-extensions' -a 127.0.0.1 -p "${PORT}"
 
 .PHONY: serve
-serve: build_loadable serve_loadable_base
-	npx http-server packages/duckdb-wasm-app/build/release -o /original.html
+serve: build_loadable_threads build_loadable serve_loadable_base
+	npx http-server packages/duckdb-wasm-app/build/release -c-1 -o /original.html
 
 .PHONY: app_server
 app_server:
@@ -456,8 +462,8 @@ build/docker_ci_image:
 
 patch_duckdb:
 	(find patches/duckdb/* -type f -name '*.patch' -print0 | xargs -0 cat | patch -p1 --forward -d submodules/duckdb) || true
-	(find patches/arrow/* -type f -name '*.patch' -print0 | xargs -0 cat | patch -p1 --forward -d submodules/arrow) || true
 	(find patches/rapidjson/* -type f -name '*.patch' -print0 | xargs -0 cat | patch -p1 --forward -d submodules/rapidjson) || true
+	(find patches/duckdb-nanoarrow/* -type f -name '*.patch' -print0 | xargs -0 cat | patch -p1 --forward -d submodules/duckdb-nanoarrow) || true
 
 apply_patches: patch_duckdb
 
@@ -465,7 +471,8 @@ apply_patches: patch_duckdb
 # so without this make always considers it "up to date" and never runs the init.
 .PHONY: submodules
 submodules:
-	git submodule update --init --recursive
+	# not recursive: duckdb-nanoarrow has its own duckdb submodule, which is not needed
+	git submodule update --init
 
 # Build infrastructure and packages required for development
 build/bootstrap: submodules yarn_install
