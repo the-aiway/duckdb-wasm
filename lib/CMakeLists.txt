@@ -17,11 +17,14 @@ if(DEFINED ENV{DUCKDB_WASM_LOADABLE_EXTENSIONS})
   set(DUCKDB_WASM_LOADABLE_EXTENSIONS ON)
 endif()
 
+# The glue post-processing must use the effective option, including environment and cache overrides.
+file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/wasm_loadable_extensions"
+     CONTENT "$<BOOL:${DUCKDB_WASM_LOADABLE_EXTENSIONS}>")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -DDUCKDB_WASM=1 -DFSST_MUST_ALIGN")
 
 if(DUCKDB_WASM_LOADABLE_EXTENSIONS)
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DWASM_LOADABLE_EXTENSIONS=1 -DDUCKDB_EXTENSION_AUTOLOAD_DEFAULT=1 -fPIC")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDUCKDB_EXTENSION_AUTOLOAD_DEFAULT=1 -fPIC")
 else()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDISABLE_EXTENSION_LOAD=1")
 endif()
@@ -79,7 +82,7 @@ endif ()
 # -Os shrinks the module by 600KB but slows down TPC-H by a factor of 2!
 # Dedicated module?
 
-set(DUCKDB_PLATFORM "wasm_mvp")
+set(DUCKDB_PLATFORM "wasm_eh")
 
 if(EMSCRIPTEN)
   # Bump stack size from default 64KB to 1MB
@@ -115,13 +118,9 @@ if(EMSCRIPTEN)
     endif()
   endif()
 
-  if(WITH_WASM_EXCEPTIONS)
-    set(DUCKDB_PLATFORM "wasm_eh")
-    set(CMAKE_CXX_FLAGS
-        "${CMAKE_CXX_FLAGS} -fwasm-exceptions -DWEBDB_FAST_EXCEPTIONS=1")
-  else()
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sDISABLE_EXCEPTION_CATCHING=0")
-  endif()
+  # All builds use WebAssembly exception handling
+  set(CMAKE_CXX_FLAGS
+      "${CMAKE_CXX_FLAGS} -fwasm-exceptions -DWEBDB_FAST_EXCEPTIONS=1")
 
   if(WITH_WASM_SIMD)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msimd128 -DWEBDB_SIMD=1")
@@ -135,7 +134,9 @@ if(EMSCRIPTEN)
   if(WITH_WASM_THREADS)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sUSE_PTHREADS=1 -DWEBDB_THREADS=1")
     set(DUCKDB_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sUSE_PTHREADS=1")
-    set(WASM_LINK_FLAGS "${WASM_LINK_FLAGS} -sUSE_PTHREADS=1 -sPTHREAD_POOL_SIZE=4 -pthread")
+    # The pool: the query thread, DuckDB's workers (maximum_threads - 1) and room for SET threads; pthread_create
+    # is wrapped, see main_thread.cc
+    set(WASM_LINK_FLAGS "${WASM_LINK_FLAGS} -sUSE_PTHREADS=1 -sPTHREAD_POOL_SIZE=8 -pthread -Wl,--wrap=pthread_create")
     set(DUCKDB_PLATFORM "wasm_threads")
   else()
     set(CMAKE_CXX_FLAGS
@@ -154,7 +155,7 @@ endif()
 if (DUCKDB_WASM_LOADABLE_EXTENSIONS)
   set(WASM_LINK_FLAGS "${WASM_LINK_FLAGS} -s FILESYSTEM=1 -s ENVIRONMENT='web,node,worker' -s ALLOW_TABLE_GROWTH -lembind")
 
-  if ($ENV{USE_GENERATED_EXPORTED_LIST} STREQUAL "yes")
+  if ("$ENV{USE_GENERATED_EXPORTED_LIST}" STREQUAL "yes")
     set(WASM_LINK_FLAGS "${WASM_LINK_FLAGS} -s MAIN_MODULE=2 -s EXPORTED_FUNCTIONS='@exported_list.txt'")
   else()
     set(WASM_LINK_FLAGS "${WASM_LINK_FLAGS} -s MAIN_MODULE=1 -s EXPORTED_FUNCTIONS='@../../../lib/base_exported_list.txt'")
@@ -176,11 +177,16 @@ set(CMAKE_BUILD_PARALLEL_LEVEL ${NPROCS})
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/modules ${CMAKE_MODULE_PATH})
 
 include("${CMAKE_SOURCE_DIR}/cmake/duckdb.cmake")
-include("${CMAKE_SOURCE_DIR}/cmake/arrow.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/benchmark.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/gflags.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/googletest.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/rapidjson.cmake")
+
+# Only DuckDB-Wasm itself needs to know whether extensions are loadable, for DuckDB it is a matter of which
+# external extension provider is registered
+if(DUCKDB_WASM_LOADABLE_EXTENSIONS)
+  add_compile_definitions(WASM_LOADABLE_EXTENSIONS=1)
+endif()
 
 # ---------------------------------------------------------------------------
 # Code coverage
@@ -214,16 +220,12 @@ include_directories("${CMAKE_SOURCE_DIR}/include" "${DUCKDB_UTF8PROC_INCLUDE_DIR
 
 add_library(
   duckdb_web
-  ${CMAKE_SOURCE_DIR}/src/arrow_casts.cc
   ${CMAKE_SOURCE_DIR}/src/arrow_insert_options.cc
-  ${CMAKE_SOURCE_DIR}/src/arrow_stream_buffer.cc
-  ${CMAKE_SOURCE_DIR}/src/http_wasm.cc
-  ${CMAKE_SOURCE_DIR}/src/arrow_type_mapping.cc
+  ${CMAKE_SOURCE_DIR}/src/arrow_ipc_writer.cc
   ${CMAKE_SOURCE_DIR}/src/config.cc
   ${CMAKE_SOURCE_DIR}/src/csv_insert_options.cc
   ${CMAKE_SOURCE_DIR}/src/functions/table_function_relation.cc
   ${CMAKE_SOURCE_DIR}/src/insert_options.cc
-  ${CMAKE_SOURCE_DIR}/src/io/arrow_ifstream.cc
   ${CMAKE_SOURCE_DIR}/src/io/buffered_filesystem.cc
   ${CMAKE_SOURCE_DIR}/src/io/file_page_buffer.cc
   ${CMAKE_SOURCE_DIR}/src/io/file_stats.cc
@@ -231,26 +233,31 @@ add_library(
   ${CMAKE_SOURCE_DIR}/src/io/ifstream.cc
   ${CMAKE_SOURCE_DIR}/src/io/memory_filesystem.cc
   ${CMAKE_SOURCE_DIR}/src/io/web_filesystem.cc
-  ${CMAKE_SOURCE_DIR}/src/json_analyzer.cc
   ${CMAKE_SOURCE_DIR}/src/json_dataview.cc
   ${CMAKE_SOURCE_DIR}/src/json_insert_options.cc
-  ${CMAKE_SOURCE_DIR}/src/json_parser.cc
-  ${CMAKE_SOURCE_DIR}/src/json_table.cc
   ${CMAKE_SOURCE_DIR}/src/json_typedef.cc
   ${CMAKE_SOURCE_DIR}/src/udf.cc
   ${CMAKE_SOURCE_DIR}/src/utils/parking_lot.cc
   ${CMAKE_SOURCE_DIR}/src/utils/shared_mutex.cc
   ${CMAKE_SOURCE_DIR}/src/utils/thread.cc
   ${CMAKE_SOURCE_DIR}/src/utils/wasm_response.cc
+  ${CMAKE_SOURCE_DIR}/src/main_thread.cc
+  ${CMAKE_SOURCE_DIR}/src/query_thread.cc
   ${CMAKE_SOURCE_DIR}/src/webdb.cc
   ${CMAKE_SOURCE_DIR}/src/webdb_api.cc)
+
+# The HTTP client is its own archive, registered like duckdb's httplib capability, which is not linked
+add_library(duckdb_web_httplib STATIC ${CMAKE_SOURCE_DIR}/src/http_wasm.cc)
+target_link_libraries(duckdb_web_httplib duckdb rapidjson)
+target_link_libraries(duckdb_web duckdb_web_httplib)
 
 if (DUCKDB_WASM_LOADABLE_EXTENSIONS)
   set(EXTENSION_CACHE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../.ccache/extension")
   set(JSON_EXTENSION_CACHE_FILE "${EXTENSION_CACHE_DIR}/json")
   set(DUCKDB_WEB_JSON "")
 
-  target_link_libraries(duckdb_web duckdb arrow rapidjson ${THREAD_LIBS})
+  target_sources(duckdb_web PRIVATE ${CMAKE_SOURCE_DIR}/src/extension_provider.cc)
+  target_link_libraries(duckdb_web duckdb duckdb_nanoarrow rapidjson ${THREAD_LIBS})
 else()
   add_library(
     duckdb_web_parquet
@@ -260,9 +267,20 @@ else()
     duckdb_web_json
     ${CMAKE_SOURCE_DIR}/src/extensions/json_extension.cc)
 
+  # Without loadable extensions parquet and json are linked statically, json is needed by insertJSONFromPath
+  set(DUCKDB_WEB_JSON "duckdb_web_json")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDUCKDB_JSON_EXTENSION")
 
-  target_link_libraries(duckdb_web duckdb duckdb_web_parquet duckdb_web_json arrow rapidjson ${THREAD_LIBS})
+  # TPC-H data generator and queries, for benchmarks
+  set(DUCKDB_WEB_TPCH "")
+  if(DUCKDB_WASM_STATIC_TPCH)
+    add_library(duckdb_web_tpch ${CMAKE_SOURCE_DIR}/src/extensions/tpch_extension.cc)
+    target_link_libraries(duckdb_web_tpch duckdb duckdb_tpch)
+    set(DUCKDB_WEB_TPCH "duckdb_web_tpch")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDUCKDB_TPCH_EXTENSION")
+  endif()
+
+  target_link_libraries(duckdb_web duckdb duckdb_web_parquet ${DUCKDB_WEB_JSON} ${DUCKDB_WEB_TPCH} duckdb_nanoarrow rapidjson ${THREAD_LIBS})
   target_link_libraries(duckdb_web_parquet duckdb duckdb_parquet)
   target_link_libraries(duckdb_web_json duckdb duckdb_json)
 endif()
@@ -289,7 +307,7 @@ if(EMSCRIPTEN)
       -s MAXIMUM_MEMORY=4GB \
       -s MODULARIZE=1 \
       -s EXPORT_NAME='DuckDB' \
-      -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"stackSave\", \"stackAlloc\", \"stackRestore\", \"createDyncallWrapper\", \"getTempRet0\", \"setTempRet0\"]' \
+      -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"stackSave\", \"stackAlloc\", \"stackRestore\", \"stringToUTF8\", \"lengthBytesUTF8\", \"HEAPU8\", \"HEAP32\", \"HEAPF64\", \"wasmMemory\"]' \
       --js-library=${CMAKE_SOURCE_DIR}/js-stubs.js")
 
 endif()
@@ -300,18 +318,12 @@ endif()
 if(NOT EMSCRIPTEN)
   set(TEST_CC
 #      ${CMAKE_SOURCE_DIR}/test/ast_test.cc
-      ${CMAKE_SOURCE_DIR}/test/all_types_test.cc
-      ${CMAKE_SOURCE_DIR}/test/arrow_casts_test.cc
       ${CMAKE_SOURCE_DIR}/test/bugs_test.cc
       ${CMAKE_SOURCE_DIR}/test/file_page_buffer_test.cc
       ${CMAKE_SOURCE_DIR}/test/glob_test.cc
       ${CMAKE_SOURCE_DIR}/test/ifstream_test.cc
-      ${CMAKE_SOURCE_DIR}/test/insert_arrow_test.cc
       ${CMAKE_SOURCE_DIR}/test/insert_csv_test.cc
       ${CMAKE_SOURCE_DIR}/test/insert_json_test.cc
-      ${CMAKE_SOURCE_DIR}/test/json_analyzer_test.cc
-      ${CMAKE_SOURCE_DIR}/test/json_table_test.cc
-#      ${CMAKE_SOURCE_DIR}/test/json_typedef_test.cc
       ${CMAKE_SOURCE_DIR}/test/json_dataview_test.cc
       ${CMAKE_SOURCE_DIR}/test/memory_filesystem_test.cc
       ${CMAKE_SOURCE_DIR}/test/parquet_test.cc

@@ -24,7 +24,7 @@ export class DuckDBConnection {
         return callback(this._bindings, this._conn);
     }
 
-    /** 
+    /**
      * Run a query and return Arrow IPC stream buffer
      * Use with arrow library of choice (e.g., @uwdata/flechette, apache-arrow)
      */
@@ -152,7 +152,7 @@ export class PreparedStatement {
         this.bindings.closePrepared(this.connectionId, this.statementId);
     }
 
-    /** 
+    /**
      * Run a prepared statement and return Arrow IPC stream buffer
      * Use with arrow library of choice (e.g., @uwdata/flechette, apache-arrow)
      */

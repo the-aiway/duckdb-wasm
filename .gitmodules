@@ -2,9 +2,6 @@
 	path = submodules/duckdb
 	url = https://github.com/duckdb/duckdb
 	update = rebase
-[submodule "submodules/arrow"]
-	path = submodules/arrow
-	url = https://github.com/apache/arrow
 	shallow = true
 	ignore = dirty
 [submodule "submodules/gflags"]
@@ -32,3 +29,8 @@
 	url = https://github.com/gregrahn/tpch-kit.git
 	ignore = dirty
 	shallow = true
+[submodule "submodules/duckdb-nanoarrow"]
+	path = submodules/duckdb-nanoarrow
+	url = https://github.com/duckdb/duckdb-nanoarrow
+	shallow = true
+	ignore = dirty

@@ -19,6 +19,19 @@ set(DUCKDB_EXTENSIONS "json;core_functions")
 # Escape semicolons in DUCKDB_EXTENSIONS before passing to ExternalProject_Add
 string(REPLACE ";" "$<SEMICOLON>" DUCKDB_EXTENSIONS_PACKED "${DUCKDB_EXTENSIONS}")
 
+# Version DuckDB reports and uses as extension folder, e.g. v2.0.0-alpha44357 (empty: derived by DuckDB)
+if(NOT DUCKDB_EXPLICIT_VERSION AND DEFINED ENV{OVERRIDE_GIT_DESCRIBE})
+  set(DUCKDB_EXPLICIT_VERSION "$ENV{OVERRIDE_GIT_DESCRIBE}")
+endif()
+
+# The duckdb-nanoarrow checkout that is built and linked statically, the submodule unless given otherwise
+if(NOT DUCKDB_NANOARROW_DIR AND DEFINED ENV{DUCKDB_NANOARROW_DIR})
+  set(DUCKDB_NANOARROW_DIR "$ENV{DUCKDB_NANOARROW_DIR}")
+endif()
+if(NOT DUCKDB_NANOARROW_DIR)
+  set(DUCKDB_NANOARROW_DIR "${CMAKE_SOURCE_DIR}/../submodules/duckdb-nanoarrow")
+endif()
+
 set(USE_WASM_THREADS FALSE)
 if(DUCKDB_PLATFORM STREQUAL "wasm_threads")
   set(USE_WASM_THREADS TRUE)
@@ -27,11 +40,14 @@ endif()
 ExternalProject_Add(
   duckdb_ep
   SOURCE_DIR "${DUCKDB_CORE_DIR}"
+  # The source is a local checkout: without this, existing stamps make ExternalProject skip the build after the
+  # submodule moves and the stale installed library gets linked
+  BUILD_ALWAYS TRUE
   PREFIX "${CMAKE_BINARY_DIR}/third_party/duckdb"
   INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/duckdb/install"
   CMAKE_ARGS -G${CMAKE_GENERATOR}
              -DCMAKE_CXX_STANDARD=17
-             -DLOCAL_EXTENSION_REPO="../../build/extension_repository"
+             -DLOCAL_EXTENSION_REPO=../../build/extension_repository
              -DCMAKE_CXX_FLAGS=${DUCKDB_CXX_FLAGS}
              -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
              -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
@@ -40,13 +56,20 @@ ExternalProject_Add(
              -DCMAKE_BUILD_TYPE=${DUCKDB_BUILD_TYPE}
              -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
              -DBUILD_EXTENSIONS=${DUCKDB_EXTENSIONS_PACKED}
-             -DSKIP_EXTENSIONS=jemalloc
+             -DENABLE_JEMALLOC=OFF
              -DBUILD_SHELL=FALSE
              -DBUILD_UNITTESTS=FALSE
-             -DDISABLE_BUILTIN_EXTENSIONS=TRUE
+             -DSTATICALLY_LINK_EXTENSIONS=core_functions
+             -DDUCKDB_CAPABILITIES=none
+             -DENABLE_BUILTIN_HTTPLIB=OFF
+             -DDUCKDB_EXPLICIT_VERSION=${DUCKDB_EXPLICIT_VERSION}
+             -DDUCKDB_EXTENSION_CONFIGS=${CMAKE_SOURCE_DIR}/../${DUCKDB_EXTENSION_CONFIGS}
+             -DDUCKDB_NANOARROW_DIR=${DUCKDB_NANOARROW_DIR}
+             -DNANOARROW_IPC_COMPRESSION=OFF
              -DUSE_WASM_THREADS=${USE_WASM_THREADS}
              -DDUCKDB_EXPLICIT_PLATFORM=${DUCKDB_EXPLICIT_PLATFORM}
              -DSMALLER_BINARY=1
+             -DSMALLER_BINARY_EXCEPT=between_select
   BUILD_BYPRODUCTS
     <INSTALL_DIR>/lib/libduckdb_static.a
     <INSTALL_DIR>/lib/libduckdb_fmt.a
@@ -54,8 +77,12 @@ ExternalProject_Add(
     <INSTALL_DIR>/lib/libduckdb_fastpforlib.a
     <INSTALL_DIR>/lib/libparquet_extension.a
     <INSTALL_DIR>/lib/libcore_functions_extension.a
-    <INSTALL_DIR>/lib/libduckdb_generated_extension_loader.a
-    <INSTALL_DIR>/lib/libjson_extension.a)
+    <INSTALL_DIR>/lib/libjson_extension.a
+    <INSTALL_DIR>/lib/libtpch_extension.a
+    <INSTALL_DIR>/lib/libnanoarrow_extension.a
+    <INSTALL_DIR>/lib/libnanoarrow_ipc_static.a
+    <INSTALL_DIR>/lib/libnanoarrow_static.a
+    <INSTALL_DIR>/lib/libflatccrt.a)
 
 ExternalProject_Get_Property(duckdb_ep install_dir)
 ExternalProject_Get_Property(duckdb_ep binary_dir)
@@ -79,7 +106,6 @@ target_link_libraries(
 #  INTERFACE ${install_dir}/lib/libduckdb_utf8proc.a
 #  INTERFACE ${install_dir}/lib/libduckdb_fastpforlib.a
   INTERFACE ${install_dir}/lib/libcore_functions_extension.a
-  INTERFACE ${install_dir}/lib/libduckdb_generated_extension_loader.a
   INTERFACE dl)
 
 target_include_directories(
@@ -103,6 +129,24 @@ add_library(duckdb_json STATIC IMPORTED)
 set_property(TARGET duckdb_json PROPERTY IMPORTED_LOCATION ${install_dir}/lib/libjson_extension.a)
 target_include_directories(duckdb_json INTERFACE ${DUCKDB_SOURCE_DIR}/extension/json/include)
 
+# TPC-H, linked statically for benchmarks (DUCKDB_WASM_STATIC_TPCH)
+add_library(duckdb_tpch STATIC IMPORTED)
+set_property(TARGET duckdb_tpch PROPERTY IMPORTED_LOCATION ${install_dir}/lib/libtpch_extension.a)
+target_include_directories(duckdb_tpch INTERFACE ${DUCKDB_SOURCE_DIR}/extension/tpch/include)
+
+# duckdb-nanoarrow with the nanoarrow C libraries it builds, also used directly for Arrow IPC
+add_library(duckdb_nanoarrow STATIC IMPORTED)
+set_property(TARGET duckdb_nanoarrow PROPERTY IMPORTED_LOCATION ${install_dir}/lib/libnanoarrow_extension.a)
+target_link_libraries(
+  duckdb_nanoarrow
+  INTERFACE ${install_dir}/lib/libnanoarrow_ipc_static.a
+  INTERFACE ${install_dir}/lib/libnanoarrow_static.a
+  INTERFACE ${install_dir}/lib/libflatccrt.a)
+set(NANOARROW_INCLUDE_DIRS "${binary_dir}/_deps/nanoarrow-src/src" "${binary_dir}/_deps/nanoarrow-build/src")
+file(MAKE_DIRECTORY ${NANOARROW_INCLUDE_DIRS})
+target_include_directories(duckdb_nanoarrow INTERFACE ${NANOARROW_INCLUDE_DIRS})
+target_compile_definitions(duckdb_nanoarrow INTERFACE NANOARROW_NAMESPACE=DuckDBExtnanoarrow)
+
 add_library(duckdb_core_functions STATIC IMPORTED)
 set_property(TARGET duckdb_core_functions PROPERTY IMPORTED_LOCATION ${install_dir}/lib/libcore_functions_extension.a)
 target_include_directories(duckdb_core_functions INTERFACE ${DUCKDB_SOURCE_DIR}/extension/core_functions/include)
@@ -110,3 +154,4 @@ target_include_directories(duckdb_core_functions INTERFACE ${DUCKDB_SOURCE_DIR}/
 add_dependencies(duckdb duckdb_ep)
 add_dependencies(duckdb_parquet duckdb_ep)
 add_dependencies(duckdb_json duckdb_ep)
+add_dependencies(duckdb_nanoarrow duckdb_ep)

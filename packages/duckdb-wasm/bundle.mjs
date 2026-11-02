@@ -42,27 +42,27 @@ const mkdir = {
 // Bundles:
 //   duckdb-browser.mjs                           - ESM Default Browser Bundle
 //   duckdb-browser-blocking.mjs                  - ESM Blocking Browser Bundle (synchronous API, unstable)
-//   duckdb-browser-mvp.worker.js                 - IIFE Web Worker for Wasm MVP
-//   duckdb-browser-eh.worker.js                  - IIFE Web Worker with Wasm EH
-//   duckdb-browser-coi.worker.js                 - IIFE Web Worker with Wasm EH + COI
-//   duckdb-browser-coi.pthread.worker.js         - IIFE PThread Worker with Wasm EH + COI
+//   duckdb-browser-base.worker.js                - IIFE Web Worker
+//   duckdb-browser-threads.worker.js             - IIFE Web Worker with threads
+//   duckdb-browser-threads.pthread.worker.js     - Compatibility alias for the threads worker
 //   duckdb-node.cjs                              - CommonJS Default Node Bundle
 //   duckdb-node-blocking.cjs                     - CommonJS Blocking Node Bundle (synchronous API, unstable)
-//   duckdb-node-mvp.worker.cjs                   - CommonJS Worker for Wasm MVP
-//   duckdb-node-eh.worker.cjs                    - CommonJS Worker with Wasm EH
+//   duckdb-node-base.worker.cjs                  - CommonJS Worker
 //   tests-browser.js                             - IIFE Jasmine Karma tests
 //   tests-node.cjs                               - CommonJS Jasmine Node tests
 //
 // The lack of alternatives for Karma won't allow us to bundle workers and tests as ESM.
 // We should upgrade all CommonJS bundles to ESM as soon as the dynamic requires are resolved.
 
-const TARGET_BROWSER = ['chrome64', 'edge79', 'firefox62', 'safari11.1'];
+// Emscripten >= 4 emits BigInt literals (WASM_BIGINT), which need chrome 67 / firefox 68 / safari 14
+const TARGET_BROWSER = ['chrome67', 'edge79', 'firefox68', 'safari14'];
 const TARGET_BROWSER_TEST = ['es2020'];
 const TARGET_NODE = ['node14.6'];
 const EXTERNALS_NODE = ['apache-arrow'];
-const EXTERNALS_BROWSER = ['apache-arrow', 'module'];
-const EXTERNALS_WEBWORKER = ['module'];
-const EXTERNALS_TEST_BROWSER = ['module'];
+// Emscripten requires node builtins as "node:*" in branches that only run under NodeJS
+const EXTERNALS_BROWSER = ['apache-arrow', 'module', 'node:*'];
+const EXTERNALS_WEBWORKER = ['module', 'node:*'];
+const EXTERNALS_TEST_BROWSER = ['module', 'node:*'];
 
 // Read CLI flags
 let is_debug = false;
@@ -119,7 +119,7 @@ const src = path.resolve(__dirname, 'src');
 // Done synchronously so the compressed files always match the copied wasm.
 // Uses Node's built-in zlib (brotli + zstd, the latter needs Node >= 22.15) so
 // no external CLI/dependency is required.
-const WASM_MODULES = ['duckdb-mvp.wasm', 'duckdb-eh.wasm', 'duckdb-coi.wasm'];
+const WASM_MODULES = ['duckdb-base.wasm', 'duckdb-threads.wasm'];
 const hasZstd = typeof zlib.zstdCompressSync === 'function';
 for (const name of WASM_MODULES) {
     const wasm = fs.readFileSync(path.resolve(src, 'bindings', name));
@@ -149,10 +149,8 @@ if (!hasZstd) {
 (async () => {
     // Don't attempt to bundle NodeJS modules in the browser build.
     console.log('[ ESBUILD ] Patch bindings');
-    patchFile('./src/bindings/duckdb-mvp.js', 'child_process');
-    patchFile('./src/bindings/duckdb-eh.js', 'child_process');
-    patchFile('./src/bindings/duckdb-coi.js', 'child_process');
-    patchFile('./src/bindings/duckdb-coi.pthread.js', 'vm');
+    patchFile('./src/bindings/duckdb-base.js', 'child_process');
+    patchFile('./src/bindings/duckdb-threads.js', 'child_process');
 
     // -------------------------------
     // Browser bundles
@@ -220,10 +218,10 @@ if (!hasZstd) {
         },
     });
 
-    console.log('[ ESBUILD ] duckdb-browser-mvp.worker.js');
+    console.log('[ ESBUILD ] duckdb-browser-base.worker.js');
     await esbuild.build({
-        entryPoints: ['./src/targets/duckdb-browser-mvp.worker.ts'],
-        outfile: 'dist/duckdb-browser-mvp.worker.js',
+        entryPoints: ['./src/targets/duckdb-browser-base.worker.ts'],
+        outfile: 'dist/duckdb-browser-base.worker.js',
         platform: 'browser',
         format: 'iife',
         globalName: 'duckdb',
@@ -235,10 +233,10 @@ if (!hasZstd) {
         define: { 'process.release.name': '"browser"' },
     });
 
-    console.log('[ ESBUILD ] duckdb-browser-eh.worker.js');
+    console.log('[ ESBUILD ] duckdb-browser-threads.worker.js');
     await esbuild.build({
-        entryPoints: ['./src/targets/duckdb-browser-eh.worker.ts'],
-        outfile: 'dist/duckdb-browser-eh.worker.js',
+        entryPoints: ['./src/targets/duckdb-browser-threads.worker.ts'],
+        outfile: 'dist/duckdb-browser-threads.worker.js',
         platform: 'browser',
         format: 'iife',
         globalName: 'duckdb',
@@ -250,25 +248,12 @@ if (!hasZstd) {
         define: { 'process.release.name': '"browser"' },
     });
 
-    console.log('[ ESBUILD ] duckdb-browser-coi.worker.js');
+    console.log('[ ESBUILD ] duckdb-browser-threads.pthread.worker.js');
     await esbuild.build({
-        entryPoints: ['./src/targets/duckdb-browser-coi.worker.ts'],
-        outfile: 'dist/duckdb-browser-coi.worker.js',
-        platform: 'browser',
-        format: 'iife',
-        globalName: 'duckdb',
-        target: TARGET_BROWSER,
-        bundle: true,
-        minify: !is_debug,
-        sourcemap: is_debug ? 'inline' : true,
-        external: EXTERNALS_WEBWORKER,
-        define: { 'process.release.name': '"browser"' },
-    });
-
-    console.log('[ ESBUILD ] duckdb-browser-coi.pthread.worker.js');
-    await esbuild.build({
-        entryPoints: ['./src/targets/duckdb-browser-coi.pthread.worker.ts'],
-        outfile: 'dist/duckdb-browser-coi.pthread.worker.js',
+        // Emscripten 6 runs pthreads from the main threads worker. Keep the
+        // legacy filename as a compatibility alias for existing bundle configs.
+        entryPoints: ['./src/targets/duckdb-browser-threads.worker.ts'],
+        outfile: 'dist/duckdb-browser-threads.pthread.worker.js',
         platform: 'browser',
         format: 'iife',
         target: TARGET_BROWSER,
@@ -309,23 +294,10 @@ if (!hasZstd) {
         external: EXTERNALS_NODE,
     });
 
-    console.log('[ ESBUILD ] duckdb-node-mvp.worker.cjs');
+    console.log('[ ESBUILD ] duckdb-node-base.worker.cjs');
     await esbuild.build({
-        entryPoints: ['./src/targets/duckdb-node-mvp.worker.ts'],
-        outfile: 'dist/duckdb-node-mvp.worker.cjs',
-        platform: 'node',
-        format: 'cjs',
-        target: TARGET_NODE,
-        bundle: true,
-        minify: !is_debug,
-        sourcemap: is_debug ? 'inline' : true,
-        external: EXTERNALS_NODE,
-    });
-
-    console.log('[ ESBUILD ] duckdb-node-eh.worker.cjs');
-    await esbuild.build({
-        entryPoints: ['./src/targets/duckdb-node-eh.worker.ts'],
-        outfile: 'dist/duckdb-node-eh.worker.cjs',
+        entryPoints: ['./src/targets/duckdb-node-base.worker.ts'],
+        outfile: 'dist/duckdb-node-base.worker.cjs',
         platform: 'node',
         format: 'cjs',
         target: TARGET_NODE,
@@ -342,6 +314,57 @@ if (!hasZstd) {
     await esbuild.build({
         entryPoints: ['./test/index_browser.ts'],
         outfile: 'dist/tests-browser.js',
+        platform: 'browser',
+        format: 'iife',
+        globalName: 'duckdb',
+        target: TARGET_BROWSER_TEST,
+        bundle: true,
+        sourcemap: is_debug ? 'inline' : true,
+        external: EXTERNALS_TEST_BROWSER,
+    });
+
+    console.log('[ ESBUILD ] tests-tpch-scale.js');
+    await esbuild.build({
+        entryPoints: ['./test/index_tpch_scale.ts'],
+        outfile: 'dist/tests-tpch-scale.js',
+        platform: 'browser',
+        format: 'iife',
+        globalName: 'duckdb',
+        target: TARGET_BROWSER_TEST,
+        bundle: true,
+        sourcemap: is_debug ? 'inline' : true,
+        external: EXTERNALS_TEST_BROWSER,
+    });
+
+    console.log('[ ESBUILD ] tests-httpfs.js');
+    await esbuild.build({
+        entryPoints: ['./test/index_httpfs.ts'],
+        outfile: 'dist/tests-httpfs.js',
+        platform: 'browser',
+        format: 'iife',
+        target: TARGET_BROWSER_TEST,
+        bundle: true,
+        sourcemap: is_debug ? 'inline' : true,
+        external: EXTERNALS_TEST_BROWSER,
+    });
+
+    console.log('[ ESBUILD ] tests-threads-smoke.js');
+    await esbuild.build({
+        entryPoints: ['./test/index_threads_smoke.ts'],
+        outfile: 'dist/tests-threads-smoke.js',
+        platform: 'browser',
+        format: 'iife',
+        globalName: 'duckdb',
+        target: TARGET_BROWSER_TEST,
+        bundle: true,
+        sourcemap: is_debug ? 'inline' : true,
+        external: EXTERNALS_TEST_BROWSER,
+    });
+
+    console.log('[ ESBUILD ] tests-threads-churn.js');
+    await esbuild.build({
+        entryPoints: ['./test/index_threads_churn.ts'],
+        outfile: 'dist/tests-threads-churn.js',
         platform: 'browser',
         format: 'iife',
         globalName: 'duckdb',

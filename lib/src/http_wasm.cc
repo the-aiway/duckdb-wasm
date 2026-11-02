@@ -5,40 +5,16 @@
 #include <iostream>
 
 #include "duckdb/common/http_util.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/web/config.h"
+#include "duckdb_static_extension.h"
 
 namespace duckdb {
-class HTTPLogger;
-class FileOpener;
-struct FileOpenerInfo;
-class HTTPState;
-HTTPHeaders TransformHeadersWasm(const HTTPHeaders &header_map, const HTTPParams &params) {
-    auto &httpfs_params = params.Cast<HTTPFSParams>();
-
-    HTTPHeaders res_headers;
-    for (auto &header : header_map) {
-        res_headers.Insert(header.first, header.second);
-    }
-    if (!httpfs_params.pre_merged_headers) {
-        for (auto &entry : params.extra_headers) {
-            res_headers.Insert(entry.first, entry.second);
-        }
-    }
-    return res_headers;
-}
-
 class HTTPWasmClient : public HTTPClient {
    public:
-    HTTPWasmClient(HTTPFSParams &http_params, const string &proto_host_port) : params(http_params) {
-        host_port = proto_host_port;
-        state = http_params.state;
-    }
-    void Initialize(HTTPParams &params) override {
-        auto &http_params = params.Cast<HTTPFSParams>();
-        state = http_params.state;
-    }
+    explicit HTTPWasmClient(const string &proto_host_port) : HTTPClient(proto_host_port), host_port(proto_host_port) {}
+    void Initialize(HTTPParams &) override {}
     string host_port;
-    HTTPFSParams &params;
 
     unique_ptr<HTTPResponse> Get(GetRequestInfo &info) override {
         // clang-format off
@@ -59,22 +35,16 @@ class HTTPWasmClient : public HTTPClient {
         if ((path.rfind("https://", 0) != 0) && (path.rfind("http://", 0) != 0)) {
             path = "https://" + path;
         }
-        auto headers = TransformHeadersWasm(info.headers, info.params);
-
-        // Create headers with bearer token if present
-        HTTPHeaders headers_with_auth = headers;
-        if (!params.bearer_token.empty()) {
-            headers_with_auth.Insert("Authorization", "Bearer " + params.bearer_token);
-        }
+        const auto &headers = info.headers;
 
         int n = 0;
-        for (auto h : headers_with_auth) {
+        for (auto h : headers) {
             n++;
         }
         char **z = (char **)(void *)malloc(n * 4 * 2);
 
         int i = 0;
-        for (auto h : headers_with_auth) {
+        for (auto h : headers) {
             z[i] = (char *)malloc(h.first.size() * 4 + 1);
             memset(z[i], 0, h.first.size() * 4 + 1);
             memcpy(z[i], h.first.c_str(), h.first.size());
@@ -109,7 +79,7 @@ class HTTPWasmClient : public HTTPClient {
 			var z = encodeURI(UTF8ToString(ptr1));
 			if (z === "Host") z = "X-Host-Override";
 			if (z === "User-Agent") {}
-			else if (z === "Authorization") {
+			else if (z.toLowerCase() === "authorization") {
                         	xhr.setRequestHeader(z, UTF8ToString(ptr2));
 			} else {
 
@@ -126,8 +96,12 @@ class HTTPWasmClient : public HTTPClient {
                 } catch {
                     return 0;
                 }
-                if (xhr.status >= 400) return 0;
+                // Only a genuine network/CORS failure yields status 0; any real
+                // HTTP response (including 4xx/5xx) must be surfaced with its body
+                // and headers so callers (e.g. the Iceberg REST catalog) can react.
+                if (xhr.status === 0) return 0;
                 var uInt8Array = xhr.response;
+                if (!uInt8Array) uInt8Array = new ArrayBuffer(0);
 
                 var len = uInt8Array.byteLength;
                 var fileOnWasmHeap = _malloc(len + 8);
@@ -174,6 +148,16 @@ class HTTPWasmClient : public HTTPClient {
                 len -= LEN123[3];
                 len /= 256;
                 Module.HEAPU8.set(LEN123, headersOnWasmHeap + 4);
+
+                // Stash the real HTTP status in the (otherwise unused) first 4
+                // bytes of the headers buffer so C++ can recover it.
+                var st123 = xhr.status;
+                var STAT123 = new Uint8Array(4);
+                STAT123[0] = st123 % 256; st123 -= STAT123[0]; st123 /= 256;
+                STAT123[1] = st123 % 256; st123 -= STAT123[1]; st123 /= 256;
+                STAT123[2] = st123 % 256; st123 -= STAT123[2]; st123 /= 256;
+                STAT123[3] = st123 % 256;
+                Module.HEAPU8.set(STAT123, headersOnWasmHeap + 0);
 
 		len = headersOnWasmHeap;
                 LEN123 = new Uint8Array(4);
@@ -252,6 +236,17 @@ class HTTPWasmClient : public HTTPClient {
                 len_headers = LEN;
             }
 
+            // Recover the real HTTP status stashed in the headers buffer prefix.
+            int32_t status_code = 0;
+            status_code |= static_cast<uint8_t>(((uint8_t *)next)[0]);
+            status_code |= static_cast<uint8_t>(((uint8_t *)next)[1]) << 8;
+            status_code |= static_cast<uint8_t>(((uint8_t *)next)[2]) << 16;
+            status_code |= static_cast<uint8_t>(((uint8_t *)next)[3]) << 24;
+            if (status_code != 0) {
+                res->status = HTTPUtil::ToStatusCode(status_code);
+                res->reason = HTTPUtil::GetStatusMessage(res->status);
+            }
+
             char *ptr = reinterpret_cast<char *>(next);
 
             string headers = string(ptr + 8, len_headers);
@@ -298,23 +293,16 @@ class HTTPWasmClient : public HTTPClient {
         if ((path.rfind("https://", 0) != 0) && (path.rfind("http://", 0) != 0)) {
             path = "https://" + path;
         }
-        auto headers = TransformHeadersWasm(info.headers, info.params);
-
-        // Create headers with bearer token if present
-        HTTPHeaders headers_with_auth = headers;
-        if (!params.bearer_token.empty()) {
-            headers_with_auth.Insert("Authorization", "Bearer " + params.bearer_token);
-        }
-
+        const auto &headers = info.headers;
         int n = 0;
-        for (auto h : headers_with_auth) {
+        for (auto h : headers) {
             n++;
         }
 
         char **z = (char **)(void *)malloc(n * 4 * 2);
 
         int i = 0;
-        for (auto h : headers_with_auth) {
+        for (auto h : headers) {
             z[i] = (char *)malloc(h.first.size() * 4 + 1);
             memset(z[i], 0, h.first.size() * 4 + 1);
             memcpy(z[i], h.first.c_str(), h.first.size());
@@ -351,7 +339,7 @@ console.log('HEAD', UTF8ToString(ptr1), UTF8ToString(ptr2));
 			var z = encodeURI(UTF8ToString(ptr1));
 			if (z === "Host") z = "X-Host-Override";
 			if (z === "User-Agent") {}
-			else if (z === "Authorization") {
+			else if (z.toLowerCase() === "authorization") {
                         	xhr.setRequestHeader(z, UTF8ToString(ptr2));
 			} else {
 				
@@ -368,9 +356,10 @@ console.log('HEAD', UTF8ToString(ptr1), UTF8ToString(ptr2));
                 } catch {
                     return 0;
                 }
-                if (xhr.status >= 400) return 0;
+                if (xhr.status === 0) return 0;
 
                 var uInt8Array = xhr.response;
+                if (!uInt8Array) uInt8Array = new ArrayBuffer(0);
                 var len = uInt8Array.byteLength;
                 var fileOnWasmHeap = _malloc(len + 8);
 
@@ -416,6 +405,14 @@ console.log('HEAD', UTF8ToString(ptr1), UTF8ToString(ptr2));
                 len -= LEN123[3];
                 len /= 256;
                 Module.HEAPU8.set(LEN123, headersOnWasmHeap + 4);
+
+                var st123 = xhr.status;
+                var STAT123 = new Uint8Array(4);
+                STAT123[0] = st123 % 256; st123 -= STAT123[0]; st123 /= 256;
+                STAT123[1] = st123 % 256; st123 -= STAT123[1]; st123 /= 256;
+                STAT123[2] = st123 % 256; st123 -= STAT123[2]; st123 /= 256;
+                STAT123[3] = st123 % 256;
+                Module.HEAPU8.set(STAT123, headersOnWasmHeap + 0);
 
 		len = headersOnWasmHeap;
                 LEN123 = new Uint8Array(4);
@@ -494,7 +491,17 @@ console.log('HEAD', UTF8ToString(ptr1), UTF8ToString(ptr2));
 		len_headers = LEN;
 	}
 		
-	char * ptr = reinterpret_cast<char*>(next) ;
+			int32_t status_code = 0;
+		status_code |= static_cast<uint8_t>((((uint8_t *)next)[0]));
+		status_code |= static_cast<uint8_t>((((uint8_t *)next)[1])) << 8;
+		status_code |= static_cast<uint8_t>((((uint8_t *)next)[2])) << 16;
+		status_code |= static_cast<uint8_t>((((uint8_t *)next)[3])) << 24;
+		if (status_code != 0) {
+		    res->status = HTTPUtil::ToStatusCode(status_code);
+		    res->reason = HTTPUtil::GetStatusMessage(res->status);
+		}
+
+		char * ptr = reinterpret_cast<char*>(next) ;
 
 
 	string headers = string(ptr + 8, len_headers);
@@ -549,23 +556,16 @@ res->headers.Insert(head, tail);
         if ((path.rfind("https://", 0) != 0) && (path.rfind("http://", 0) != 0)) {
             path = "https://" + path;
         }
-        auto headers = TransformHeadersWasm(info.headers, info.params);
-
-        // Create headers with bearer token if present
-        HTTPHeaders headers_with_auth = headers;
-        if (!params.bearer_token.empty()) {
-            headers_with_auth.Insert("Authorization", "Bearer " + params.bearer_token);
-        }
-
+        const auto &headers = info.headers;
         int n = 0;
-        for (auto h : headers_with_auth) {
+        for (auto h : headers) {
             n++;
         }
 
         char **z = (char **)(void *)malloc(n * 4 * 2);
 
         int i = 0;
-        for (auto h : headers_with_auth) {
+        for (auto h : headers) {
             z[i] = (char *)malloc(h.first.size() * 4 + 1);
             memset(z[i], 0, h.first.size() * 4 + 1);
             memcpy(z[i], h.first.c_str(), h.first.size());
@@ -605,7 +605,7 @@ res->headers.Insert(head, tail);
 			var z = encodeURI(UTF8ToString(ptr1));
 			if (z === "Host") z = "X-Host-Override";
 			if (z === "User-Agent") {}
-			else if (z === "Authorization") {
+			else if (z.toLowerCase() === "authorization") {
                         	xhr.setRequestHeader(z, UTF8ToString(ptr2));
 			} else {
 				
@@ -629,16 +629,17 @@ res->headers.Insert(head, tail);
                 } catch {
                     return 0;
                 }
-                if (xhr.status >= 400) return 0;
+                if (xhr.status === 0) return 0;
                 var uInt8Array = xhr.response;
+                if (!uInt8Array) uInt8Array = new ArrayBuffer(0);
 
                 var len = uInt8Array.byteLength;
-                var fileOnWasmHeap = _malloc(len + 4);
+                var fileOnWasmHeap = _malloc(len + 8);
 
                 var properArray = new Uint8Array(uInt8Array);
 
                 for (var iii = 0; iii < len; iii++) {
-                    Module.HEAPU8[iii + fileOnWasmHeap + 4] = properArray[iii];
+                    Module.HEAPU8[iii + fileOnWasmHeap + 8] = properArray[iii];
                 }
                 var LEN123 = new Uint8Array(4);
                 LEN123[0] = len % 256;
@@ -653,7 +654,14 @@ res->headers.Insert(head, tail);
                 LEN123[3] = len % 256;
                 len -= LEN123[3];
                 len /= 256;
-                Module.HEAPU8.set(LEN123, fileOnWasmHeap);
+                Module.HEAPU8.set(LEN123, fileOnWasmHeap + 4);
+                var st123 = xhr.status;
+                var STAT123 = new Uint8Array(4);
+                STAT123[0] = st123 % 256; st123 -= STAT123[0]; st123 /= 256;
+                STAT123[1] = st123 % 256; st123 -= STAT123[1]; st123 /= 256;
+                STAT123[2] = st123 % 256; st123 -= STAT123[2]; st123 /= 256;
+                STAT123[3] = st123 % 256;
+                Module.HEAPU8.set(STAT123, fileOnWasmHeap + 0);
                 return fileOnWasmHeap;
             },
             path.c_str(), n, z, "POST", payload, buffer_length);
@@ -675,18 +683,29 @@ res->headers.Insert(head, tail);
             res->reason = "Please consult the browser console for details, might be potentially a CORS error";
         } else {
             res = duckdb::make_uniq<HTTPResponse>(HTTPStatusCode::OK_200);
+            int32_t status_code = 0;
+            status_code |= static_cast<uint8_t>((((uint8_t *)exe)[0]));
+            status_code |= static_cast<uint8_t>((((uint8_t *)exe)[1])) << 8;
+            status_code |= static_cast<uint8_t>((((uint8_t *)exe)[2])) << 16;
+            status_code |= static_cast<uint8_t>((((uint8_t *)exe)[3])) << 24;
+            if (status_code != 0) {
+                res->status = HTTPUtil::ToStatusCode(status_code);
+                res->reason = HTTPUtil::GetStatusMessage(res->status);
+            }
             uint64_t LEN = 0;
             LEN *= 256;
-            LEN += ((uint8_t *)exe)[3];
+            LEN += ((uint8_t *)exe)[3 + 4];
             LEN *= 256;
-            LEN += ((uint8_t *)exe)[2];
+            LEN += ((uint8_t *)exe)[2 + 4];
             LEN *= 256;
-            LEN += ((uint8_t *)exe)[1];
+            LEN += ((uint8_t *)exe)[1 + 4];
             LEN *= 256;
-            LEN += ((uint8_t *)exe)[0];
-            res->body = string(exe + 4, LEN);
+            LEN += ((uint8_t *)exe)[0 + 4];
+            res->body = string(exe + 8, LEN);
 
-            info.buffer_out += string(exe + 4, LEN);
+            if (status_code >= 200 && status_code < 300) {
+                info.buffer_out += string(exe + 8, LEN);
+            }
 
             free(exe);
         }
@@ -712,23 +731,16 @@ res->headers.Insert(head, tail);
             path = "https://" + path;
         }
 
-        auto headers = TransformHeadersWasm(info.headers, info.params);
-
-        // Create headers with bearer token if present
-        HTTPHeaders headers_with_auth = headers;
-        if (!params.bearer_token.empty()) {
-            headers_with_auth.Insert("Authorization", "Bearer " + params.bearer_token);
-        }
-
+        const auto &headers = info.headers;
         int n = 0;
-        for (auto h : headers_with_auth) {
+        for (auto h : headers) {
             n++;
         }
 
         char **z = (char **)(void *)malloc(n * 4 * 2);
 
         int i = 0;
-        for (auto h : headers_with_auth) {
+        for (auto h : headers) {
             z[i] = (char *)malloc(h.first.size() * 4 + 1);
             memset(z[i], 0, h.first.size() * 4 + 1);
             memcpy(z[i], h.first.c_str(), h.first.size());
@@ -760,6 +772,7 @@ res->headers.Insert(head, tail);
 
                 var i = 0;
                 var len = $1;
+                var hasContentType = false;
                 while (i < len*2) {
                     var ptr1 = HEAP32[($2)/4 + i ];
                     var ptr2 = HEAP32[($2)/4 + i + 1];
@@ -767,8 +780,9 @@ res->headers.Insert(head, tail);
                     try {
 			var z = encodeURI(UTF8ToString(ptr1));
 			if (z === "Host") z = "X-Host-Override";
+			if (z.toLowerCase() === "content-type") hasContentType = true;
 			if (z === "User-Agent") {}
-			else if (z === "Authorization") {
+			else if (z.toLowerCase() === "authorization") {
                         	xhr.setRequestHeader(z, UTF8ToString(ptr2));
 			} else {
 				
@@ -780,8 +794,15 @@ res->headers.Insert(head, tail);
                     i += 2;
                 }
 
-//xhr.setRequestHeader("Content-Type", "application/octet-stream");
-//xhr.setRequestHeader("Content-Type", "text/json");
+                // s3fs signs "Content-Type: application/octet-stream" into the SigV4
+                // canonical request but omits it from the header map for that default
+                // value; XHR will not add a Content-Type for a Uint8Array body, so the
+                // signed header would never be sent -> SignatureDoesNotMatch. Re-add it
+                // when the loop above did not already send one (keeps signed == sent,
+                // and stays correct once httpfs emits the header itself).
+                if (!hasContentType) {
+                    try { xhr.setRequestHeader("Content-Type", "application/octet-stream"); } catch (error) {}
+                }
                 try {
 			var post_payload = new Uint8Array($5);
 
@@ -792,16 +813,23 @@ res->headers.Insert(head, tail);
                 } catch {
                     return 0;
                 }
-                if (xhr.status >= 400) return 0;
-		var uInt8Array = Uint8Array.from(Array.from(xhr.getResponseHeader("Etag")).map(letter => letter.charCodeAt(0)));
+                if (xhr.status === 0) return 0;
+		var uInt8Array;
+                if (xhr.status >= 400) {
+                    var errb = xhr.response;
+                    uInt8Array = errb ? new Uint8Array(errb) : new Uint8Array(0);
+                } else {
+                    var et = xhr.getResponseHeader("Etag");
+                    uInt8Array = et ? Uint8Array.from(Array.from(et).map(letter => letter.charCodeAt(0))) : new Uint8Array(0);
+                }
 
                 var len = uInt8Array.byteLength;
-                var fileOnWasmHeap = _malloc(len + 4);
+                var fileOnWasmHeap = _malloc(len + 8);
 
                 var properArray = new Uint8Array(uInt8Array);
 
                 for (var iii = 0; iii < len; iii++) {
-                    Module.HEAPU8[iii + fileOnWasmHeap + 4] = properArray[iii];
+                    Module.HEAPU8[iii + fileOnWasmHeap + 8] = properArray[iii];
                 }
                 var LEN123 = new Uint8Array(4);
                 LEN123[0] = len % 256;
@@ -816,7 +844,14 @@ res->headers.Insert(head, tail);
                 LEN123[3] = len % 256;
                 len -= LEN123[3];
                 len /= 256;
-                Module.HEAPU8.set(LEN123, fileOnWasmHeap);
+                Module.HEAPU8.set(LEN123, fileOnWasmHeap + 4);
+                var st123 = xhr.status;
+                var STAT123 = new Uint8Array(4);
+                STAT123[0] = st123 % 256; st123 -= STAT123[0]; st123 /= 256;
+                STAT123[1] = st123 % 256; st123 -= STAT123[1]; st123 /= 256;
+                STAT123[2] = st123 % 256; st123 -= STAT123[2]; st123 /= 256;
+                STAT123[3] = st123 % 256;
+                Module.HEAPU8.set(STAT123, fileOnWasmHeap + 0);
                 return fileOnWasmHeap;
             },
             path.c_str(), n, z, "PUT", payload, buffer_length);
@@ -838,16 +873,29 @@ res->headers.Insert(head, tail);
             res->reason = "Please consult the browser console for details, might be potentially a CORS error";
         } else {
             res = duckdb::make_uniq<HTTPResponse>(HTTPStatusCode::OK_200);
+            int32_t status_code = 0;
+            status_code |= static_cast<uint8_t>((((uint8_t *)exe)[0]));
+            status_code |= static_cast<uint8_t>((((uint8_t *)exe)[1])) << 8;
+            status_code |= static_cast<uint8_t>((((uint8_t *)exe)[2])) << 16;
+            status_code |= static_cast<uint8_t>((((uint8_t *)exe)[3])) << 24;
+            if (status_code != 0) {
+                res->status = HTTPUtil::ToStatusCode(status_code);
+                res->reason = HTTPUtil::GetStatusMessage(res->status);
+            }
             uint64_t LEN = 0;
             LEN *= 256;
-            LEN += ((uint8_t *)exe)[3];
+            LEN += ((uint8_t *)exe)[3 + 4];
             LEN *= 256;
-            LEN += ((uint8_t *)exe)[2];
+            LEN += ((uint8_t *)exe)[2 + 4];
             LEN *= 256;
-            LEN += ((uint8_t *)exe)[1];
+            LEN += ((uint8_t *)exe)[1 + 4];
             LEN *= 256;
-            LEN += ((uint8_t *)exe)[0];
-            res->headers.Insert("ETag", string(exe + 4, LEN));
+            LEN += ((uint8_t *)exe)[0 + 4];
+            if (status_code >= 200 && status_code < 300) {
+                res->headers.Insert("ETag", string(exe + 8, LEN));
+            } else {
+                res->body = string(exe + 8, LEN);
+            }
 
             // info.buffer_out += string(exe + 4, LEN);
 
@@ -855,6 +903,10 @@ res->headers.Insert(head, tail);
         }
 
         return res;
+    }
+    unique_ptr<HTTPResponse> Options(OptionsRequestInfo &info) override {
+        // FIXME: implement OPTIONS requests
+        throw NotImplementedException("OPTIONS requests are not supported in DuckDB-Wasm");
     }
     unique_ptr<HTTPResponse> Delete(DeleteRequestInfo &info) override {
         unique_ptr<HTTPResponse> res;
@@ -875,23 +927,16 @@ res->headers.Insert(head, tail);
             path = "https://" + path;
         }
 
-        auto headers = TransformHeadersWasm(info.headers, info.params);
-
-        // Create headers with bearer token if present
-        HTTPHeaders headers_with_auth = headers;
-        if (!params.bearer_token.empty()) {
-            headers_with_auth.Insert("Authorization", "Bearer " + params.bearer_token);
-        }
-
+        const auto &headers = info.headers;
         int n = 0;
-        for (auto h : headers_with_auth) {
+        for (auto h : headers) {
             n++;
         }
 
         char **z = (char **)(void *)malloc(n * 4 * 2);
 
         int i = 0;
-        for (auto h : headers_with_auth) {
+        for (auto h : headers) {
             z[i] = (char *)malloc(h.first.size() * 4 + 1);
             memset(z[i], 0, h.first.size() * 4 + 1);
             memcpy(z[i], h.first.c_str(), h.first.size());
@@ -927,7 +972,7 @@ res->headers.Insert(head, tail);
 			var z = encodeURI(UTF8ToString(ptr1));
 			if (z === "Host") z = "X-Host-Override";
 			if (z === "User-Agent") {}
-			else if (z === "Authorization") {
+			else if (z.toLowerCase() === "authorization") {
                         	xhr.setRequestHeader(z, UTF8ToString(ptr2));
 			} else {
 				
@@ -944,16 +989,17 @@ res->headers.Insert(head, tail);
                 } catch {
                     return 0;
                 }
-                if (xhr.status >= 400) return 0;
+                if (xhr.status === 0) return 0;
                 var uInt8Array = xhr.response;
+                if (!uInt8Array) uInt8Array = new ArrayBuffer(0);
 
                 var len = uInt8Array.byteLength;
-                var fileOnWasmHeap = _malloc(len + 4);
+                var fileOnWasmHeap = _malloc(len + 8);
 
                 var properArray = new Uint8Array(uInt8Array);
 
                 for (var iii = 0; iii < len; iii++) {
-                    Module.HEAPU8[iii + fileOnWasmHeap + 4] = properArray[iii];
+                    Module.HEAPU8[iii + fileOnWasmHeap + 8] = properArray[iii];
                 }
                 var LEN123 = new Uint8Array(4);
                 LEN123[0] = len % 256;
@@ -968,7 +1014,14 @@ res->headers.Insert(head, tail);
                 LEN123[3] = len % 256;
                 len -= LEN123[3];
                 len /= 256;
-                Module.HEAPU8.set(LEN123, fileOnWasmHeap);
+                Module.HEAPU8.set(LEN123, fileOnWasmHeap + 4);
+                var st123 = xhr.status;
+                var STAT123 = new Uint8Array(4);
+                STAT123[0] = st123 % 256; st123 -= STAT123[0]; st123 /= 256;
+                STAT123[1] = st123 % 256; st123 -= STAT123[1]; st123 /= 256;
+                STAT123[2] = st123 % 256; st123 -= STAT123[2]; st123 /= 256;
+                STAT123[3] = st123 % 256;
+                Module.HEAPU8.set(STAT123, fileOnWasmHeap + 0);
                 return fileOnWasmHeap;
             },
             path.c_str(), n, z, "DELETE");
@@ -988,16 +1041,25 @@ res->headers.Insert(head, tail);
             res->reason = "Please consult the browser console for details, might be potentially a CORS error";
         } else {
             res = duckdb::make_uniq<HTTPResponse>(HTTPStatusCode::OK_200);
+            int32_t status_code = 0;
+            status_code |= static_cast<uint8_t>((((uint8_t *)exe)[0]));
+            status_code |= static_cast<uint8_t>((((uint8_t *)exe)[1])) << 8;
+            status_code |= static_cast<uint8_t>((((uint8_t *)exe)[2])) << 16;
+            status_code |= static_cast<uint8_t>((((uint8_t *)exe)[3])) << 24;
+            if (status_code != 0) {
+                res->status = HTTPUtil::ToStatusCode(status_code);
+                res->reason = HTTPUtil::GetStatusMessage(res->status);
+            }
             uint64_t LEN = 0;
             LEN *= 256;
-            LEN += ((uint8_t *)exe)[3];
+            LEN += ((uint8_t *)exe)[3 + 4];
             LEN *= 256;
-            LEN += ((uint8_t *)exe)[2];
+            LEN += ((uint8_t *)exe)[2 + 4];
             LEN *= 256;
-            LEN += ((uint8_t *)exe)[1];
+            LEN += ((uint8_t *)exe)[1 + 4];
             LEN *= 256;
-            LEN += ((uint8_t *)exe)[0];
-            res->body = string(exe + 4, LEN);
+            LEN += ((uint8_t *)exe)[0 + 4];
+            res->body = string(exe + 8, LEN);
             /*
                         if (info.content_handler) {
                             info.content_handler((const unsigned char *)exe + 4, LEN);
@@ -1009,16 +1071,28 @@ res->headers.Insert(head, tail);
 
         return res;
     }
-
-   private:
-    optional_ptr<HTTPState> state;
 };
 
-unique_ptr<HTTPClient> HTTPWasmUtil::InitializeClient(HTTPParams &http_params, const string &proto_host_port) {
-    auto client = make_uniq<HTTPWasmClient>(http_params.Cast<HTTPFSParams>(), proto_host_port);
-    return std::move(client);
+unique_ptr<HTTPClient> HTTPWasmUtil::InitializeClient(HTTPParams &, const string &proto_host_port) {
+    return make_uniq<HTTPWasmClient>(proto_host_port);
 }
 
 string HTTPWasmUtil::GetName() const { return "WasmHTTPUtils"; }
 
+static void RegisterHTTPWasmClient(DatabaseInstance &db) { db.config.SetHTTPUtil(make_shared_ptr<HTTPWasmUtil>()); }
+
 }  // namespace duckdb
+
+//! The HTTP client of DuckDB-Wasm, on XMLHttpRequest in browsers and a child process in NodeJS. It takes the place of
+//! DuckDB's httplib capability, which is not linked, and registers under the same name for every database opened
+//! afterwards. Extensions such as httpfs use it through HTTPUtil and provide no client of their own.
+extern "C" int32_t duckdb_extension_httplib_describe(duckdb_extension_descriptor *descriptor) {
+    if (descriptor->version < 2) {
+        descriptor->set_error(descriptor, "httplib needs descriptor layout 2");
+        return 1;
+    }
+    descriptor->version = 2;
+    descriptor->name = "httplib";
+    descriptor->database_callback = reinterpret_cast<void (*)(void)>(duckdb::RegisterHTTPWasmClient);
+    return 0;
+}

@@ -49,9 +49,10 @@ export function testOPFS(baseDir: string, bundle: () => DuckDBBundle): void {
         if (db) {
             await db.reset().catch(() => {
             });
-            await db.terminate().catch(() => {
-            });
+            // Release the OPFS handles before the worker goes away
             await db.dropFiles().catch(() => {
+            });
+            await db.terminate().catch(() => {
             });
         }
         await removeFiles();
@@ -105,8 +106,6 @@ export function testOPFS(baseDir: string, bundle: () => DuckDBBundle): void {
                 accessMode: DuckDBAccessMode.READ_WRITE
             });
             conn = await db.connect();
-            
-            return; //FIXME
 
             const result = await conn.send(`SELECT count(*) ::INTEGER as cnt FROM tmp;`);
             const batches = [];
@@ -115,6 +114,65 @@ export function testOPFS(baseDir: string, bundle: () => DuckDBBundle): void {
             }
             const table = await new arrow.Table<{ cnt: arrow.Int }>(batches);
             expect(table.getChildAt(0)?.get(0)).toBeGreaterThan(60_000);
+        });
+
+        it('Create database and delete files without error', async () => {
+            const registerFiles = async (instance: AsyncDuckDB) => {
+                await instance.registerOPFSFileName('opfs://temp.db');
+                await instance.registerOPFSFileName('opfs://temp.db.wal');
+                await instance.registerOPFSFileName('opfs://temp.db.wal.checkpoint');
+                await instance.registerOPFSFileName('opfs://temp.db.wal.recovery');
+            };
+
+            const dropFiles = async (instance: AsyncDuckDB) => {
+                await instance.dropFiles([
+                    'opfs://temp.db',
+                    'opfs://temp.db.wal',
+                    'opfs://temp.db.wal.checkpoint',
+                    'opfs://temp.db.wal.recovery',
+                ]);
+            }
+
+            await registerFiles(db);
+            await conn.query("ATTACH 'opfs://temp.db' as opfs_db;");
+            await conn.query("CREATE TABLE opfs_db.t (x VARCHAR)");
+            await conn.query("INSERT INTO opfs_db.t VALUES ('hello world')");
+            await conn.query('DETACH opfs_db;');
+            await dropFiles(db);
+
+            // A second instance should now be able to read the created files.
+            // Without error, as there should be no lingering OPFS handles.
+            const worker = new Worker(bundle().mainWorker!);
+            const db2 = new AsyncDuckDB(logger, worker);
+            await db2.instantiate(bundle().mainModule, bundle().pthreadWorker);
+            await db2.open({ });
+            const conn2 = await db2.connect();
+            await registerFiles(db2);
+
+            await conn2.query("ATTACH 'opfs://temp.db' as opfs_db;");
+            const result = await conn2.send("SELECT * FROM opfs_db.t");
+            const batches = [];
+            for await (const batch of result) {
+                batches.push(batch);
+            }
+            const content = await new arrow.Table<{ t: arrow.Utf8 }>(batches).toArray();
+            expect(content.length).toBe(1);
+            expect(content[0].x).toBe('hello world');
+
+            await conn2.query('DETACH opfs_db;');
+            await dropFiles(db2);
+
+            // Delete files, will error if there is still a handle open. opfs:// files live in /duckdb/fs
+            const opfsRoot = await navigator.storage.getDirectory();
+            const fsDir = await (await opfsRoot.getDirectoryHandle('duckdb')).getDirectoryHandle('fs');
+            const handle = await fsDir.getFileHandle('temp.db');
+            expect((await handle.getFile()).size).toBeGreaterThan(0);
+            await fsDir.removeEntry('temp.db');
+            for (const name of ['temp.db.wal', 'temp.db.wal.checkpoint', 'temp.db.wal.recovery']) {
+                await fsDir.removeEntry(name).catch(_ignore);
+            }
+            conn2.close();
+            db2.terminate();
         });
 
         it('Load Parquet file that are already with empty handler', async () => {
@@ -379,6 +437,69 @@ export function testOPFS(baseDir: string, bundle: () => DuckDBBundle): void {
             }
         });
 
+        it('Partitioned COPY creates directories, glob and a second instance see them', async () => {
+            db.config.opfs = { fileHandling: 'auto' };
+            await conn.query(`
+                COPY (SELECT i % 3 AS part, i FROM range(30) t(i)) TO 'opfs://out' (FORMAT PARQUET, PARTITION_BY (part))
+            `);
+            // Globbing and hive partitioning over the directories of this instance
+            const count = await conn.query(`
+                SELECT count(*)::INTEGER AS cnt, count(DISTINCT part)::INTEGER AS parts
+                FROM read_parquet('opfs://out/*/*.parquet', hive_partitioning = true)
+            `);
+            expect(count.getChildAt(0)?.get(0)).toEqual(30);
+            expect(count.getChildAt(1)?.get(0)).toEqual(3);
+            const files = await conn.query(`SELECT file FROM glob('opfs://out/**/*.parquet') ORDER BY file`);
+            expect(files.numRows).toEqual(3);
+            expect(files.getChildAt(0)?.get(0)).toMatch(/^opfs:\/\/out\/part=0\//);
+
+            // Another instance opens the directory tree as it is in OPFS
+            const worker = new Worker(bundle().mainWorker!);
+            const db2 = new AsyncDuckDB(logger, worker);
+            await db2.instantiate(bundle().mainModule, bundle().pthreadWorker);
+            await db2.open({ opfs: { fileHandling: 'auto' } });
+            const conn2 = await db2.connect();
+            try {
+                const count2 = await conn2.query(`
+                    SELECT count(*)::INTEGER AS cnt FROM read_parquet('opfs://out/**/*.parquet')
+                `);
+                expect(count2.getChildAt(0)?.get(0)).toEqual(30);
+            } finally {
+                await conn2.close();
+                await db2.terminate();
+            }
+        });
+
+        it('Persistent secrets live in opfs://home and are shared between instances', async () => {
+            const home = await conn.query(`SELECT current_setting('home_directory') AS home`);
+            expect(home.getChildAt(0)?.get(0)).toEqual('opfs://home');
+            await conn.query(`CREATE PERSISTENT SECRET opfs_secret (TYPE http, BEARER_TOKEN 'token')`);
+
+            const another = async (check: (conn: AsyncDuckDBConnection) => Promise<void>) => {
+                const worker = new Worker(bundle().mainWorker!);
+                const db2 = new AsyncDuckDB(logger, worker);
+                await db2.instantiate(bundle().mainModule, bundle().pthreadWorker);
+                await db2.open({});
+                const conn2 = await db2.connect();
+                try {
+                    await check(conn2);
+                } finally {
+                    await conn2.close();
+                    await db2.terminate();
+                }
+            };
+            // An in-memory instance reads the secret the first one stored, and drops it
+            await another(async conn2 => {
+                const secrets = await conn2.query(`SELECT name FROM duckdb_secrets() WHERE persistent`);
+                expect(secrets.getChildAt(0)?.toArray()).toEqual(['opfs_secret']);
+                await conn2.query(`DROP PERSISTENT SECRET opfs_secret`);
+            });
+            await another(async conn3 => {
+                const secrets = await conn3.query(`SELECT count(*)::INTEGER AS cnt FROM duckdb_secrets() WHERE persistent`);
+                expect(secrets.getChildAt(0)?.get(0)).toEqual(0);
+            });
+        });
+
         it('Copy CSV to OPFS + Load CSV', async () => {
             //1. data preparation
             db.config.opfs = {
@@ -400,8 +521,25 @@ export function testOPFS(baseDir: string, bundle: () => DuckDBBundle): void {
 
     async function removeFiles() {
         const opfsRoot = await navigator.storage.getDirectory();
+        // opfs:// files live under /duckdb/fs. The scratch directories under /duckdb/scratch belong to the
+        // instances (the shared test database holds one for the whole run), dead ones are reconciled at the next
+        // mount. A terminated worker releases its access handles asynchronously, the removal is retried until
+        // they are gone
+        for (let attempt = 0; ; ++attempt) {
+            try {
+                const root = await opfsRoot.getDirectoryHandle('duckdb');
+                await root.removeEntry('fs', { recursive: true });
+                break;
+            } catch (e: any) {
+                if (e?.name === 'NotFoundError') break;
+                if (attempt >= 50) throw e;
+                await new Promise(resolve => setTimeout(resolve, 20));
+            }
+        }
         await opfsRoot.removeEntry('test.db').catch(_ignore);
         await opfsRoot.removeEntry('test.db.wal').catch(_ignore);
+        await opfsRoot.removeEntry('test.db.wal.checkpoint').catch(_ignore);
+        await opfsRoot.removeEntry('test.db.wal.recovery').catch(_ignore);
         await opfsRoot.removeEntry('test.csv').catch(_ignore);
         await opfsRoot.removeEntry('test1.csv').catch(_ignore);
         await opfsRoot.removeEntry('test2.csv').catch(_ignore);

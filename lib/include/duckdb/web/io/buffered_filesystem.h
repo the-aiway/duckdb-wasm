@@ -141,10 +141,13 @@ class BufferedFileSystem : public duckdb::FileSystem {
         return filesystem_.Glob(PatchFilenameOwned(path), opener);
     }
 
+    /// Overide canonicalize path to allow for OPFS:// path urls
+    string CanonicalizePath(const string &path_p, optional_ptr<FileOpener> opener = nullptr) override;
+
     /// Register subsystem
     void RegisterSubSystem(unique_ptr<FileSystem> sub_fs) override;
-    /// Register subsystem
-    void RegisterSubSystem(FileCompressionType compression_type, unique_ptr<FileSystem> sub_fs) override;
+    /// Register compression filesystem
+    void RegisterCompressionFilesystem(unique_ptr<CompressedFileSystem> fs) override;
 
     /// Set the file pointer of a file handle to a specified location. Reads and writes will happen from this location
     void Seek(duckdb::FileHandle &handle, idx_t location) override;
@@ -154,6 +157,9 @@ class BufferedFileSystem : public duckdb::FileSystem {
     idx_t SeekPosition(duckdb::FileHandle &handle) override;
     /// Whether or not we can seek into the file
     bool CanSeek() override;
+    /// The web file system is the local file system of the platform: DuckDB routes what it writes next to the
+    /// user (secrets, extension installs) to the local file system
+    bool IsLocalFileSystem() const override { return true; }
     /// Whether or not the FS handles plain files on disk. This is relevant for certain optimizations, as random reads
     /// in a file on-disk are much cheaper than e.g. random reads in a file over the network
     bool OnDiskFile(duckdb::FileHandle &handle) override;

@@ -1,4 +1,5 @@
 import { DuckDBModule, PThread } from './duckdb_module';
+import { OPFSAccessMode } from './opfs_scratch';
 import { DuckDBConfig } from './config';
 import { Logger } from '../log';
 import { InstantiationProgress } from './progress';
@@ -16,6 +17,30 @@ const TEXT_ENCODER = new TextEncoder();
 declare global {
     // eslint-disable-next-line no-var
     var DUCKDB_RUNTIME: any;
+}
+
+/** With shared memory another thread can grow the memory, and the exported heap views of this thread are only
+ * refreshed when it touches them through emscripten's own code. The exported views become accessors that refresh
+ * on every read; emscripten keeps assigning them, which the setter accepts. */
+function installHeapAccessors(mod: DuckDBModule): void {
+    const memory = mod.wasmMemory;
+    if (!memory || typeof SharedArrayBuffer === 'undefined' || !(memory.buffer instanceof SharedArrayBuffer)) return;
+    const views = { HEAPU8: Uint8Array, HEAP32: Int32Array, HEAPF64: Float64Array } as const;
+    for (const name of Object.keys(views) as (keyof typeof views)[]) {
+        const Ctor = views[name];
+        let view: any = (mod as any)[name];
+        Object.defineProperty(mod, name, {
+            configurable: true,
+            enumerable: true,
+            get: () => {
+                if (view.buffer !== memory.buffer) view = new Ctor(memory.buffer);
+                return view;
+            },
+            set: (next: any) => {
+                view = next;
+            },
+        });
+    }
 }
 
 /** A DuckDB Feature */
@@ -43,6 +68,7 @@ export abstract class DuckDBBindingsBase implements DuckDBBindings {
     constructor(logger: Logger, runtime: DuckDBRuntime) {
         this._logger = logger;
         this._runtime = runtime;
+        this._runtime.setLogger?.(logger);
     }
 
     /** Get the logger */
@@ -88,6 +114,7 @@ export abstract class DuckDBBindingsBase implements DuckDBBindings {
         // Wait for onRuntimeInitialized
         await this._initPromise;
         this._initPromise = null;
+        installHeapAccessors(this._instance);
         // Remove own progress callback
         this.onInstantiationProgress = this.onInstantiationProgress.filter(x => x != onProgress);
         (globalThis as any).DUCKDB_BINDINGS = this;
@@ -129,7 +156,7 @@ export abstract class DuckDBBindingsBase implements DuckDBBindings {
     /** Tokenize a script */
     public tokenize(text: string): ScriptTokens {
         const BUF = TEXT_ENCODER.encode(text);
-        const bufferPtr = this.mod._malloc(BUF.length);
+        const bufferPtr = (this.mod._malloc(BUF.length) >>> 0);
         const bufferOfs = this.mod.HEAPU8.subarray(bufferPtr, bufferPtr + BUF.length);
         bufferOfs.set(BUF);
         const [s, d, n] = callSRet(
@@ -155,20 +182,12 @@ export abstract class DuckDBBindingsBase implements DuckDBBindings {
     /** Disconnect from database */
     public disconnect(conn: number): void {
         this.mod.ccall('duckdb_web_disconnect', null, ['number'], [conn]);
-        if (this.pthread) {
-            for (const worker of [...this.pthread.runningWorkers, ...this.pthread.unusedWorkers]) {
-                worker.postMessage({
-                    cmd: 'dropUDFFunctions',
-                    connectionId: conn,
-                });
-            }
-        }
     }
 
     /** Send a query and return the full result */
     public runQuery(conn: number, text: string): Uint8Array {
         const BUF = TEXT_ENCODER.encode(text);
-        const bufferPtr = this.mod._malloc(BUF.length);
+        const bufferPtr = (this.mod._malloc(BUF.length) >>> 0);
         const bufferOfs = this.mod.HEAPU8.subarray(bufferPtr, bufferPtr + BUF.length);
         bufferOfs.set(BUF);
         const [s, d, n] = callSRet(
@@ -193,7 +212,7 @@ export abstract class DuckDBBindingsBase implements DuckDBBindings {
      */
     public startPendingQuery(conn: number, text: string, allowStreamResult: boolean = false): Uint8Array | null {
         const BUF = TEXT_ENCODER.encode(text);
-        const bufferPtr = this.mod._malloc(BUF.length);
+        const bufferPtr = (this.mod._malloc(BUF.length) >>> 0);
         const bufferOfs = this.mod.HEAPU8.subarray(bufferPtr, bufferPtr + BUF.length);
         bufferOfs.set(BUF);
         const [s, d, n] = callSRet(
@@ -257,7 +276,7 @@ export abstract class DuckDBBindingsBase implements DuckDBBindings {
     /** Get table names */
     public getTableNames(conn: number, text: string): string[] {
         const BUF = TEXT_ENCODER.encode(text);
-        const bufferPtr = this.mod._malloc(BUF.length);
+        const bufferPtr = (this.mod._malloc(BUF.length) >>> 0);
         const bufferOfs = this.mod.HEAPU8.subarray(bufferPtr, bufferPtr + BUF.length);
         bufferOfs.set(BUF);
         const [s, d, n] = callSRet(
@@ -281,7 +300,7 @@ export abstract class DuckDBBindingsBase implements DuckDBBindings {
     /** Prepare a statement and return its identifier */
     public createPrepared(conn: number, text: string): number {
         const BUF = TEXT_ENCODER.encode(text);
-        const bufferPtr = this.mod._malloc(BUF.length);
+        const bufferPtr = (this.mod._malloc(BUF.length) >>> 0);
         const bufferOfs = this.mod.HEAPU8.subarray(bufferPtr, bufferPtr + BUF.length);
         bufferOfs.set(BUF);
         const [s, d, n] = callSRet(
@@ -343,7 +362,7 @@ export abstract class DuckDBBindingsBase implements DuckDBBindings {
     public insertArrowFromIPCStream(conn: number, buffer: Uint8Array, options?: ArrowInsertOptions): void {
         if (buffer.length == 0) return;
         // Store buffer
-        const bufferPtr = this.mod._malloc(buffer.length);
+        const bufferPtr = (this.mod._malloc(buffer.length) >>> 0);
         const bufferOfs = this.mod.HEAPU8.subarray(bufferPtr, bufferPtr + buffer.length);
         bufferOfs.set(buffer);
         const optJSON = options ? JSON.stringify(options) : '';
@@ -430,7 +449,7 @@ export abstract class DuckDBBindingsBase implements DuckDBBindings {
     }
     /** Register a file buffer */
     public registerFileBuffer(name: string, buffer: Uint8Array): void {
-        const ptr = this.mod._malloc(buffer.length);
+        const ptr = (this.mod._malloc(buffer.length) >>> 0);
         const dst = this.mod.HEAPU8.subarray(ptr, ptr + buffer.length);
         dst.set(buffer);
         const [s, d, n] = callSRet(
@@ -444,18 +463,41 @@ export abstract class DuckDBBindingsBase implements DuckDBBindings {
         }
         dropResponseBuffers(this.mod);
     }
-    public async prepareFileHandle(fileName: string, protocol: DuckDBDataProtocol): Promise<void> {
+    /** Prepare a file (or the files a glob pattern matches) for the next query, returns the names prepared */
+    public async prepareFileHandle(
+        fileName: string,
+        protocol: DuckDBDataProtocol,
+        mode: OPFSAccessMode = 'read',
+    ): Promise<string[]> {
         if (protocol === DuckDBDataProtocol.BROWSER_FSACCESS && this._runtime.prepareFileHandles) {
-            const list = await this._runtime.prepareFileHandles([fileName], DuckDBDataProtocol.BROWSER_FSACCESS);
+            const list = await this._runtime.prepareFileHandles([fileName], DuckDBDataProtocol.BROWSER_FSACCESS, mode);
+            const prepared: string[] = [];
             for (const item of list) {
                 const { handle, path: filePath, fromCached } = item;
                 if (!fromCached && handle.getSize()) {
                     await this.registerFileHandleAsync(filePath, handle, DuckDBDataProtocol.BROWSER_FSACCESS, true);
                 }
+                prepared.push(filePath);
             }
-            return;
+            return prepared;
         }
         throw new Error(`prepareFileHandle: unsupported protocol ${protocol}`);
+    }
+    /** Is a pending query or a result stream open on any connection? */
+    public queriesInFlight(): boolean {
+        return this.mod.ccall('duckdb_web_queries_in_flight', 'boolean', [], []);
+    }
+    /** Mount the origin private file system, where the runtime has one */
+    public async mountOPFS(): Promise<void> {
+        if (this._runtime.mountOPFS) {
+            await this._runtime.mountOPFS();
+        }
+    }
+    /** Finish file operations that could only be completed asynchronously, called between queries */
+    public async checkpointFiles(): Promise<void> {
+        if (this._runtime.checkpointFiles) {
+            await this._runtime.checkpointFiles();
+        }
     }
     /** Prepare a file handle that could only be acquired aschronously */
     public async prepareDBFileHandle(path: string, protocol: DuckDBDataProtocol): Promise<void> {
@@ -533,21 +575,7 @@ export abstract class DuckDBBindingsBase implements DuckDBBindings {
         if (globalThis.DUCKDB_RUNTIME._preparedHandles?.[name]) {
             delete globalThis.DUCKDB_RUNTIME._preparedHandles[name];
         }
-        if (this.pthread) {
-            for (const worker of this.pthread.runningWorkers) {
-                worker.postMessage({
-                    cmd: 'registerFileHandle',
-                    fileName: name,
-                    fileHandle: handle,
-                });
-            }
-            for (const worker of this.pthread.unusedWorkers) {
-                worker.postMessage({
-                    cmd: 'dropFileHandle',
-                    fileName: name,
-                });
-            }
-        }
+        // The runtime lives on this thread only, the worker threads reach it through the main thread (main_thread.h)
     }
     /** Drop file */
     public dropFile(name: string): void {
@@ -565,7 +593,7 @@ export abstract class DuckDBBindingsBase implements DuckDBBindings {
             for (const str of (names ?? [])) {
                 if (str !== null && str !== undefined && str.length > 0) {
                     const size = this.mod.lengthBytesUTF8(str) + 1;
-                    const ret = this.mod._malloc(size);
+                    const ret = (this.mod._malloc(size) >>> 0);
                     if (!ret) {
                         throw new Error(`Failed to allocate memory for string: ${str}`);
                     }
@@ -573,12 +601,12 @@ export abstract class DuckDBBindingsBase implements DuckDBBindings {
                     pointers.push(ret);
                 }
             }
-            pointerOfArray = this.mod._malloc(pointers.length * 4);
+            pointerOfArray = (this.mod._malloc(pointers.length * 4) >>> 0);
             if (!pointerOfArray) {
                 throw new Error(`Failed to allocate memory for pointers array`);
             }
             for (let i = 0; i < pointers.length; i++) {
-                this.mod.HEAP32[(pointerOfArray >> 2) + i] = pointers[i];
+                this.mod.HEAP32[(pointerOfArray >>> 2) + i] = pointers[i];
             }
             const [s, d, n] = callSRet(
                 this.mod,
@@ -630,9 +658,9 @@ export abstract class DuckDBBindingsBase implements DuckDBBindings {
         return copy;
     }
     /** Enable tracking of file statistics */
-    public async registerOPFSFileName(file: string): Promise<void> {
+    public async registerOPFSFileName(file: string, mode: OPFSAccessMode = 'write'): Promise<string[]> {
         if (file.startsWith('opfs://')) {
-            return this.prepareFileHandle(file, DuckDBDataProtocol.BROWSER_FSACCESS);
+            return this.prepareFileHandle(file, DuckDBDataProtocol.BROWSER_FSACCESS, mode);
         } else {
             throw new Error('Not an OPFS file name: ' + file);
         }
