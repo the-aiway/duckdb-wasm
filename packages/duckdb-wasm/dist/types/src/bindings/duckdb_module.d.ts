@@ -10,4 +10,6 @@ export interface DuckDBModule extends EmscriptenModule {
     stringToUTF8: typeof stringToUTF8;
     ccall: typeof ccall;
     PThread: PThread;
+    /** The memory, exported: with shared memory another thread can grow it */
+    wasmMemory?: WebAssembly.Memory;
 }

@@ -1,4 +1,4 @@
-import { DuckDBBrowserBindings } from './bindings_browser_base';
+import { DuckDBBrowserBindings } from './bindings_browser_common';
 import { DuckDBModule } from './duckdb_module';
 import { DuckDBRuntime } from './runtime';
 import { Logger } from '../log';
