@@ -22,6 +22,11 @@ on:
         skip_tests:
           type: string
 
+# aiway fork: read-only GITHUB_TOKEN for every job (CodeQL actions/missing-workflow-permissions).
+# Matches the repo default; jobs needing more (js_libs_loadable_deploy) declare their own block.
+permissions:
+    contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' || github.sha }}-${{ github.event_name}}
   cancel-in-progress: true
