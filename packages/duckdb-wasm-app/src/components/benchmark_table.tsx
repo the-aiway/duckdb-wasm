@@ -29,7 +29,7 @@ const BenchmarkGroupHeader: React.FC<GroupHeaderProps> = (props: GroupHeaderProp
 );
 
 interface WithWarningProps {
-    children: React.ReactFragment;
+    children: React.ReactNode;
     warning: string;
     className: string;
 }

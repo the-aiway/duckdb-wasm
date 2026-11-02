@@ -2,7 +2,7 @@ import React from 'react';
 import styles from './page_structure.module.css';
 
 interface PageSectionProps {
-    children: React.ReactChild | React.ReactChild[];
+    children: React.ReactNode;
 }
 
 export const PageSection: React.FC<PageSectionProps> = (props: PageSectionProps) => (
