@@ -79,8 +79,12 @@ WebDBConfig WebDBConfig::ReadFrom(std::string_view args_json) {
         if (doc.HasMember("temporaryDirectory") && doc["temporaryDirectory"].IsString()) {
             config.temporary_directory = doc["temporaryDirectory"].GetString();
         }
-        if (doc.HasMember("spill") && doc["spill"].IsBool() && !doc["spill"].GetBool()) {
-            config.temporary_directory = std::nullopt;
+        if (doc.HasMember("spill") && doc["spill"].IsBool()) {
+            if (!doc["spill"].GetBool()) {
+                config.temporary_directory = std::nullopt;
+            } else if (!config.temporary_directory.has_value()) {
+                config.temporary_directory = "js_buffer://tmp";
+            }
         }
         if (doc.HasMember("extensionRepository") && doc["extensionRepository"].IsString()) {
             config.extension_repository = doc["extensionRepository"].GetString();
