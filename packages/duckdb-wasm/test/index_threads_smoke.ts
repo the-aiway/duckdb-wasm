@@ -2,7 +2,10 @@
  * Staged smoke test of the threads bundle, each stage logged: a hang shows where. Run with
  * karma/threads-smoke-chrome.cjs (cross-origin isolated).
  */
+import { installArrowCompat } from './arrow_compat';
 import * as duckdb from '../src/';
+
+installArrowCompat();
 
 const BUNDLE: duckdb.DuckDBBundle = {
     mainModule: '/static/duckdb-threads.wasm',
