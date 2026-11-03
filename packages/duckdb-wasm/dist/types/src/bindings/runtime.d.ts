@@ -1,4 +1,6 @@
 import { DuckDBModule } from './duckdb_module';
+import { Logger } from '../log';
+import { OPFSAccessMode } from './opfs_scratch';
 import { UDFFunction } from './udf_function';
 /** Helper to decode text */
 export declare const decodeText: (input?: BufferSource) => string;
@@ -15,7 +17,9 @@ export declare enum DuckDBDataProtocol {
     BROWSER_FILEREADER = 2,
     BROWSER_FSACCESS = 3,
     HTTP = 4,
-    S3 = 5
+    S3 = 5,
+    /** Files held by the runtime outside the WASM heap (js_buffer://) */
+    JS_BUFFER = 6
 }
 /** File flags for opening files*/
 export declare enum FileFlags {
@@ -74,6 +78,7 @@ export declare function dropResponseBuffers(mod: DuckDBModule): void;
 export interface DuckDBRuntime {
     _files?: Map<string, any>;
     _udfFunctions: Map<number, UDFFunction>;
+    setLogger?(logger: Logger): void;
     testPlatformFeature(mod: DuckDBModule, feature: number): boolean;
     getDefaultDataProtocol(mod: DuckDBModule): number;
     openFile(mod: DuckDBModule, fileId: number, flags: FileFlags): void;
@@ -93,8 +98,12 @@ export interface DuckDBRuntime {
     checkFile(mod: DuckDBModule, pathPtr: number, pathLen: number): boolean;
     removeFile(mod: DuckDBModule, pathPtr: number, pathLen: number): void;
     prepareFileHandle?: (path: string, protocol: DuckDBDataProtocol) => Promise<PreparedDBFileHandle[]>;
-    prepareFileHandles?: (path: string[], protocol: DuckDBDataProtocol) => Promise<PreparedDBFileHandle[]>;
+    prepareFileHandles?: (path: string[], protocol: DuckDBDataProtocol, mode?: OPFSAccessMode) => Promise<PreparedDBFileHandle[]>;
     prepareDBFileHandle?: (path: string, protocol: DuckDBDataProtocol) => Promise<PreparedDBFileHandle[]>;
+    /** Finish file operations that could only be completed asynchronously, called between queries */
+    checkpointFiles?: () => Promise<void>;
+    /** Mount the origin private file system, a no-op where there is none */
+    mountOPFS?: () => Promise<void>;
     progressUpdate(final: number, percentage: number, iteration: number): void;
     callScalarUDF(mod: DuckDBModule, response: number, funcId: number, descPtr: number, descSize: number, ptrsPtr: number, ptrsSize: number): void;
 }

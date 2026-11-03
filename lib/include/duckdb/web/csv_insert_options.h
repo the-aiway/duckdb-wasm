@@ -6,7 +6,8 @@
 #include <optional>
 #include <string>
 
-#include "arrow/type_fwd.h"
+#include "duckdb/common/types.hpp"
+#include "duckdb/web/status.h"
 #include "rapidjson/document.h"
 
 namespace duckdb {
@@ -38,10 +39,10 @@ struct CSVInsertOptions {
     /// Specified timestampformat?
     std::optional<std::string> timestampformat = std::nullopt;
     /// Specified columns?
-    std::optional<std::vector<std::shared_ptr<arrow::Field>>> columns = std::nullopt;
+    std::optional<duckdb::child_list_t<duckdb::LogicalType>> columns = std::nullopt;
 
     /// Read from input stream
-    arrow::Status ReadFrom(const rapidjson::Document& doc);
+    web::Status ReadFrom(const rapidjson::Document& doc);
 };
 
 }  // namespace csv

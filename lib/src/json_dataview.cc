@@ -1,11 +1,11 @@
 #include "duckdb/web/json_dataview.h"
 
-#include <arrow/result.h>
-
 #include <algorithm>
 #include <cstdint>
 #include <duckdb/common/types.hpp>
 #include <duckdb/common/types/vector.hpp>
+#include <duckdb/common/vector/flat_vector.hpp>
+#include <duckdb/common/vector/struct_vector.hpp>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -15,20 +15,13 @@
 #include <variant>
 #include <vector>
 
-#include "arrow/status.h"
-#include "arrow/type.h"
-#include "arrow/type_fwd.h"
-#include "arrow/type_traits.h"
-#include "arrow/util/value_parsing.h"
 #include "duckdb/common/string_util.hpp"
-#include "duckdb/web/json_parser.h"
 #include "duckdb/web/json_typedef.h"
+#include "duckdb/web/status.h"
 #include "rapidjson/document.h"
 #include "rapidjson/istreamwrapper.h"
 #include "rapidjson/rapidjson.h"
 #include "rapidjson/writer.h"
-
-using namespace arrow;
 
 namespace duckdb {
 namespace web {
@@ -48,9 +41,8 @@ std::pair<T*, size_t> create_additional_buffer(std::vector<double>& data_ptrs, a
 }  // namespace
 
 /// Serialize a DuckDB Vector as JSON data view
-arrow::Result<rapidjson::Value> CreateDataView(rapidjson::Document& doc, duckdb::DataChunk& chunk,
-                                               std::vector<double>& data_ptrs,
-                                               additional_buffers_t& additional_buffers) {
+web::Result<rapidjson::Value> CreateDataView(rapidjson::Document& doc, duckdb::DataChunk& chunk,
+                                             std::vector<double>& data_ptrs, additional_buffers_t& additional_buffers) {
     auto allocator = doc.GetAllocator();
 
     // TODO create the descriptor in the bind phase for performance
@@ -103,7 +95,7 @@ arrow::Result<rapidjson::Value> CreateDataView(rapidjson::Document& doc, duckdb:
             switch (vec_type.id()) {
                 case LogicalTypeId::INTEGER:
                 case LogicalTypeId::DOUBLE:
-                    data_ptrs.push_back(static_cast<double>(reinterpret_cast<uintptr_t>(vec->GetData())));
+                    data_ptrs.push_back(static_cast<double>(reinterpret_cast<uintptr_t>(FlatVector::GetData(*vec))));
                     desc.AddMember("dataBuffer", rapidjson::Value{static_cast<uint64_t>(data_ptrs.size() - 1)},
                                    allocator);
                     break;
@@ -133,13 +125,13 @@ arrow::Result<rapidjson::Value> CreateDataView(rapidjson::Document& doc, duckdb:
                         auto& entry = entries[c];
                         rapidjson::Value desc{rapidjson::kObjectType};
                         auto name = StructType::GetChildName(vec_type, c);
-                        desc.AddMember("name", rapidjson::Value{name, allocator}, allocator);
-                        pending.push_back({false, entry.get(), std::move(desc), current_idx});
+                        desc.AddMember("name", rapidjson::Value{name.GetIdentifierName(), allocator}, allocator);
+                        pending.push_back({false, &entry, std::move(desc), current_idx});
                     }
                     break;
                 }
                 default:
-                    return arrow::Status::ExecutionError("Unsupported UDF argument type " + vec->GetType().ToString());
+                    return web::Status::ExecutionError("Unsupported UDF argument type " + vec->GetType().ToString());
             }
         }
         col_descs.PushBack(std::move(col_desc), allocator);

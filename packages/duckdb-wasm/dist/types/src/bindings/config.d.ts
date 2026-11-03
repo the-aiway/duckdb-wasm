@@ -55,6 +55,24 @@ export interface DuckDBConfig {
      */
     accessMode?: DuckDBAccessMode;
     /**
+     * Spill data that does not fit in memory to the temporary directory, js_buffer://tmp by default:
+     * buffers held by the runtime outside the WASM heap. Enabled unless set to false.
+     */
+    spill?: boolean;
+    /**
+     * The temporary directory of DuckDB, overrides the default of the runtime
+     */
+    temporaryDirectory?: string;
+    /**
+     * The home directory of DuckDB, opfs://home where the browser has an origin private file system: what DuckDB
+     * stores next to the user (persistent secrets) persists across sessions
+     */
+    homeDirectory?: string;
+    /**
+     * The repository extensions are loaded from (custom_extension_repository), extensions.duckdb.org by default
+     */
+    extensionRepository?: string;
+    /**
      * The maximum number of threads.
      * Note that this will only work with cross-origin isolated sites since it requires SharedArrayBuffers.
      */

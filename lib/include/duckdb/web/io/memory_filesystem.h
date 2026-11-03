@@ -3,9 +3,9 @@
 
 #include <unordered_set>
 
-#include "arrow/status.h"
 #include "duckdb/common/constants.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/web/status.h"
 
 namespace duckdb {
 namespace web {
@@ -68,7 +68,7 @@ class MemoryFileSystem : public duckdb::FileSystem {
     virtual ~MemoryFileSystem() {}
 
     /// Register a file buffer
-    arrow::Status RegisterFileBuffer(std::string file_name, std::vector<char> file_buffer);
+    web::Status RegisterFileBuffer(std::string file_name, std::vector<char> file_buffer);
 
     /// Open a file
     duckdb::unique_ptr<duckdb::FileHandle> OpenFile(const string &path, FileOpenFlags flags,

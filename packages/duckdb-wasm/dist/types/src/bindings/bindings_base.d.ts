@@ -1,4 +1,5 @@
 import { DuckDBModule, PThread } from './duckdb_module';
+import { OPFSAccessMode } from './opfs_scratch';
 import { DuckDBConfig } from './config';
 import { Logger } from '../log';
 import { InstantiationProgress } from './progress';
@@ -98,7 +99,14 @@ export declare abstract class DuckDBBindingsBase implements DuckDBBindings {
     registerFileText(name: string, text: string): void;
     /** Register a file buffer */
     registerFileBuffer(name: string, buffer: Uint8Array): void;
-    prepareFileHandle(fileName: string, protocol: DuckDBDataProtocol): Promise<void>;
+    /** Prepare a file (or the files a glob pattern matches) for the next query, returns the names prepared */
+    prepareFileHandle(fileName: string, protocol: DuckDBDataProtocol, mode?: OPFSAccessMode): Promise<string[]>;
+    /** Is a pending query or a result stream open on any connection? */
+    queriesInFlight(): boolean;
+    /** Mount the origin private file system, where the runtime has one */
+    mountOPFS(): Promise<void>;
+    /** Finish file operations that could only be completed asynchronously, called between queries */
+    checkpointFiles(): Promise<void>;
     /** Prepare a file handle that could only be acquired aschronously */
     prepareDBFileHandle(path: string, protocol: DuckDBDataProtocol): Promise<void>;
     /** Prepare a file object URL */
@@ -118,7 +126,7 @@ export declare abstract class DuckDBBindingsBase implements DuckDBBindings {
     /** Write a file to a buffer */
     copyFileToBuffer(name: string): Uint8Array;
     /** Enable tracking of file statistics */
-    registerOPFSFileName(file: string): Promise<void>;
+    registerOPFSFileName(file: string, mode?: OPFSAccessMode): Promise<string[]>;
     collectFileStatistics(file: string, enable: boolean): void;
     /** Export file statistics */
     exportFileStatistics(file: string): FileStatistics;

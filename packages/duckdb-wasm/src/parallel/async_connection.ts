@@ -179,7 +179,7 @@ export class AsyncPreparedStatement {
         await this.bindings.closePrepared(this.connectionId, this.statementId);
     }
 
-    /** 
+    /**
      * Run a prepared statement and return Arrow IPC stream buffer
      * Use with arrow library of choice (e.g., @uwdata/flechette, apache-arrow)
      */

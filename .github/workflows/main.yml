@@ -22,14 +22,22 @@ on:
         skip_tests:
           type: string
 
+# aiway fork: read-only GITHUB_TOKEN for every job (CodeQL actions/missing-workflow-permissions).
+# Matches the repo default; jobs needing more (js_libs_loadable_deploy) declare their own block.
+permissions:
+    contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' || github.sha }}-${{ github.event_name}}
   cancel-in-progress: true
 
 env:
-  EMSCRIPTEN_VERSION: '3.1.71'
-  EMSCRIPTEN_VERSION_COI: '3.1.57'
+  EMSCRIPTEN_VERSION: '6.0.9'
+  EMSCRIPTEN_VERSION_COI: '6.0.9'
   DEFAULT_USE_GENERATED_EXPORTED_LIST: 'no'
+  # DuckDB >= v2.0 no longer derives its version from git tags, the wasm builds pick this up instead.
+  # The Wasm jobs override it with the duckdb_version job, which falls back to the submodule's release tag.
+  OVERRIDE_GIT_DESCRIBE: ${{ inputs.override_git_describe }}
 
 jobs:
     clang_format:
@@ -38,7 +46,7 @@ jobs:
         steps:
             - uses: actions/checkout@v6
               with:
-                  submodules: 'recursive'
+                  submodules: true
 
             - name: Lint ./lib
               uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
@@ -55,7 +63,7 @@ jobs:
         steps:
             - uses: actions/checkout@v6
               with:
-                  submodules: 'recursive'
+                  submodules: true
 
             - name: Cache node_modules
               uses: actions/cache@v5
@@ -73,7 +81,8 @@ jobs:
               uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
-                      yarn install --frozen-lockfile --prefer-offline
+                      # aiway fork: the ci-env image ships Node 18; some deps declare engines >=20
+                      yarn install --frozen-lockfile --prefer-offline --ignore-engines
 
             - name: Lint @duckdb/duckdb-wasm
               uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
@@ -93,13 +102,37 @@ jobs:
                   script: |-
                       yarn workspace @duckdb/benchmarks run lint
 
+    duckdb_version:
+        name: DuckDB version
+        runs-on: ubuntu-latest
+        outputs:
+            version: ${{ steps.resolve.outputs.version }}
+        steps:
+            - uses: actions/checkout@v6
+
+            - name: Resolve DuckDB version
+              id: resolve
+              env:
+                  INPUT_VERSION: ${{ inputs.override_git_describe }}
+              run: |
+                  # Push and tag builds have no override input, so use the release tag the submodule is on, if any
+                  version="${INPUT_VERSION}"
+                  if [ -z "${version}" ]; then
+                      sha=$(git rev-parse HEAD:submodules/duckdb)
+                      url=$(git config -f .gitmodules submodule.submodules/duckdb.url)
+                      version=$(git ls-remote --tags "${url}" 'v*.*.*' \
+                          | awk -v sha="${sha}" '$1 == sha { sub("^refs/tags/", "", $2); sub("\\^\\{\\}$", "", $2); print $2; exit }')
+                  fi
+                  echo "DuckDB version: ${version:-<none, keep the dev version>}"
+                  echo "version=${version}" >> "$GITHUB_OUTPUT"
+
     tpchgen:
         name: TPCH Generator
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v6
               with:
-                  submodules: 'recursive'
+                  submodules: true
 
             - name: Cache generator
               uses: actions/cache@v5
@@ -129,7 +162,7 @@ jobs:
         steps:
             - uses: actions/checkout@v6
               with:
-                  submodules: 'recursive'
+                  submodules: true
 
             - name: Cache rust build
               uses: actions/cache@v5
@@ -167,7 +200,7 @@ jobs:
         steps:
             - uses: actions/checkout@v6
               with:
-                  submodules: 'recursive'
+                  submodules: true
                   fetch-depth: 0
 
             - uses: actions/download-artifact@v8
@@ -265,7 +298,7 @@ jobs:
         steps:
             - uses: actions/checkout@v6
               with:
-                  submodules: 'recursive'
+                  submodules: true
                   fetch-depth: 0
 
             - uses: actions/download-artifact@v8
@@ -353,16 +386,19 @@ jobs:
                           -ignore-filename-regex submodules \
                           > ./reports/coverage_lib.txt
 
-    wasm_mvp:
-        name: Wasm / mvp
+    wasm_base:
+        name: Wasm / base
         runs-on: ubuntu-latest
         needs:
             - dataprep
             - tpchgen
+            - duckdb_version
+        env:
+            OVERRIDE_GIT_DESCRIBE: ${{ needs.duckdb_version.outputs.version }}
         steps:
             - uses: actions/checkout@v6
               with:
-                  submodules: 'recursive'
+                  submodules: true
                   fetch-depth: 0
 
             - name: Prepare repository
@@ -385,70 +421,30 @@ jobs:
 
             - name: Build Wasm module
               run: |
-                  DUCKDB_PLATFORM="wasm_mvp" ./scripts/wasm_build_lib.sh relperf mvp
+                  DUCKDB_PLATFORM="wasm_eh" ./scripts/wasm_build_lib.sh relperf base
 
             - name: Upload artifact
               uses: actions/upload-artifact@v7
               with:
-                  name: wasm-mvp
+                  name: wasm-base
                   path: |
-                      ./packages/duckdb-wasm/src/bindings/duckdb-mvp.js
-                      ./packages/duckdb-wasm/src/bindings/duckdb-mvp.wasm
+                      ./packages/duckdb-wasm/src/bindings/duckdb-base.js
+                      ./packages/duckdb-wasm/src/bindings/duckdb-base.wasm
                   retention-days: 1
 
-    wasm_eh:
-        name: Wasm / eh
+    wasm_threads:
+        name: Wasm / threads
         runs-on: ubuntu-latest
         needs:
             - dataprep
             - tpchgen
+            - duckdb_version
+        env:
+            OVERRIDE_GIT_DESCRIBE: ${{ needs.duckdb_version.outputs.version }}
         steps:
             - uses: actions/checkout@v6
               with:
-                  submodules: 'recursive'
-                  fetch-depth: 0
-
-            - name: Prepare repository
-              run: |
-                  make apply_patches
-                  cd submodules/duckdb && git tag ${{ inputs.override_git_describe }}
-
-            - uses: mymindstorm/setup-emsdk@v14
-              with:
-                  version: ${{ env.EMSCRIPTEN_VERSION }}
-
-            - name: Setup Ccache
-              uses: hendrikmuhs/ccache-action@main
-              with:
-                  key: ${{ github.job }}
-
-            - name: Git submodule status
-              run: |
-                  git submodule status > git_submodule_status.txt
-
-            - name: Build Wasm module
-              run: |
-                  DUCKDB_PLATFORM="wasm_eh" ./scripts/wasm_build_lib.sh relperf eh
-
-            - name: Upload artifact
-              uses: actions/upload-artifact@v7
-              with:
-                  name: wasm-eh
-                  path: |
-                      ./packages/duckdb-wasm/src/bindings/duckdb-eh.js
-                      ./packages/duckdb-wasm/src/bindings/duckdb-eh.wasm
-                  retention-days: 1
-
-    wasm_coi:
-        name: Wasm / coi
-        runs-on: ubuntu-latest
-        needs:
-            - dataprep
-            - tpchgen
-        steps:
-            - uses: actions/checkout@v6
-              with:
-                  submodules: 'recursive'
+                  submodules: true
                   fetch-depth: 0
 
             - name: Prepare repository
@@ -471,28 +467,31 @@ jobs:
 
             - name: Build Wasm module
               run: |
-                  DUCKDB_PLATFORM="wasm_coi" ./scripts/wasm_build_lib.sh relperf coi
+                  DUCKDB_PLATFORM="wasm_threads" ./scripts/wasm_build_lib.sh relperf threads
 
             - name: Upload artifact
               uses: actions/upload-artifact@v7
               with:
-                  name: wasm-coi
+                  name: wasm-threads
                   path: |
-                      ./packages/duckdb-wasm/src/bindings/duckdb-coi.js
-                      ./packages/duckdb-wasm/src/bindings/duckdb-coi.pthread.js
-                      ./packages/duckdb-wasm/src/bindings/duckdb-coi.wasm
+                      ./packages/duckdb-wasm/src/bindings/duckdb-threads.js
+                      ./packages/duckdb-wasm/src/bindings/duckdb-threads.pthread.js
+                      ./packages/duckdb-wasm/src/bindings/duckdb-threads.wasm
                   retention-days: 1
 
-    wasm_mvp_loadable:
-        name: Wasm / mvp (loadable version)
+    wasm_base_loadable:
+        name: Wasm / base (loadable version)
         runs-on: ubuntu-latest
         needs:
             - dataprep
             - tpchgen
+            - duckdb_version
+        env:
+            OVERRIDE_GIT_DESCRIBE: ${{ needs.duckdb_version.outputs.version }}
         steps:
             - uses: actions/checkout@v6
               with:
-                  submodules: 'recursive'
+                  submodules: true
                   fetch-depth: 0
 
             - name: Install dependencies
@@ -519,74 +518,38 @@ jobs:
 
             - name: Build Wasm module
               run: |
-                  USE_GENERATED_EXPORTED_LIST="$DEFAULT_USE_GENERATED_EXPORTED_LIST" DUCKDB_PLATFORM="wasm_mvp" DUCKDB_WASM_LOADABLE_EXTENSIONS=1 GEN=ninja ./scripts/wasm_build_lib.sh relsize mvp
+                  USE_GENERATED_EXPORTED_LIST="$DEFAULT_USE_GENERATED_EXPORTED_LIST" DUCKDB_PLATFORM="wasm_eh" DUCKDB_WASM_LOADABLE_EXTENSIONS=1 GEN=ninja ./scripts/wasm_build_lib.sh relsize base
 
             - name: Upload artifact
               uses: actions/upload-artifact@v7
               with:
-                  name: wasm-mvp-loadable
+                  name: wasm-base-loadable
                   path: |
-                      ./packages/duckdb-wasm/src/bindings/duckdb-mvp.js
-                      ./packages/duckdb-wasm/src/bindings/duckdb-mvp.wasm
+                      ./packages/duckdb-wasm/src/bindings/duckdb-base.js
+                      ./packages/duckdb-wasm/src/bindings/duckdb-base.wasm
                   retention-days: 1
 
-    wasm_eh_loadable:
-        name: Wasm / eh (loadable version)
-        runs-on: ubuntu-latest
-        needs:
-            - dataprep
-            - tpchgen
-        steps:
-            - uses: actions/checkout@v6
-              with:
-                  submodules: 'recursive'
-                  fetch-depth: 0
-
-            - name: Install dependencies
-              run: |
-                  sudo apt install wabt
-
-            - name: Prepare repository
-              run: |
-                  make apply_patches
-                  cd submodules/duckdb && git tag ${{ inputs.override_git_describe }}
-
-            - uses: mymindstorm/setup-emsdk@v14
-              with:
-                  version: ${{ env.EMSCRIPTEN_VERSION }}
-
-            - name: Setup Ccache
-              uses: hendrikmuhs/ccache-action@main
-              with:
-                  key: ${{ github.job }}
-
-            - name: Git submodule status
-              run: |
-                  git submodule status > git_submodule_status.txt
-
-            - name: Build Wasm module
-              run: |
-                  USE_GENERATED_EXPORTED_LIST="$DEFAULT_USE_GENERATED_EXPORTED_LIST" DUCKDB_PLATFORM="wasm_eh" DUCKDB_WASM_LOADABLE_EXTENSIONS=1 GEN=ninja ./scripts/wasm_build_lib.sh relsize eh
-
-            - name: Upload artifact
+            - name: Upload extension repository
               uses: actions/upload-artifact@v7
               with:
-                  name: wasm-eh-loadable
-                  path: |
-                      ./packages/duckdb-wasm/src/bindings/duckdb-eh.js
-                      ./packages/duckdb-wasm/src/bindings/duckdb-eh.wasm
+                  name: extension-repository-base-loadable
+                  path: ./build/extension_repository
+                  if-no-files-found: error
                   retention-days: 1
 
-    wasm_coi_loadable:
-        name: Wasm / coi (loadable version)
+    wasm_threads_loadable:
+        name: Wasm / threads (loadable version)
         runs-on: ubuntu-latest
         needs:
             - dataprep
             - tpchgen
+            - duckdb_version
+        env:
+            OVERRIDE_GIT_DESCRIBE: ${{ needs.duckdb_version.outputs.version }}
         steps:
             - uses: actions/checkout@v6
               with:
-                  submodules: 'recursive'
+                  submodules: true
                   fetch-depth: 0
 
             - name: Install dependencies
@@ -613,31 +576,42 @@ jobs:
 
             - name: Build Wasm module
               run: |
-                  USE_GENERATED_EXPORTED_LIST="$DEFAULT_USE_GENERATED_EXPORTED_LIST" DUCKDB_PLATFORM="wasm_threads" DUCKDB_WASM_LOADABLE_EXTENSIONS="signed" GEN=ninja ./scripts/wasm_build_lib.sh relsize coi
+                  USE_GENERATED_EXPORTED_LIST="$DEFAULT_USE_GENERATED_EXPORTED_LIST" DUCKDB_PLATFORM="wasm_threads" DUCKDB_WASM_LOADABLE_EXTENSIONS="signed" GEN=ninja ./scripts/wasm_build_lib.sh relsize threads
+
+            - name: Test pthread completion handler
+              run: |
+                  node ./scripts/test_wasm_pthread_glue.cjs ./packages/duckdb-wasm/src/bindings/duckdb-threads.js
 
             - name: Upload artifact
               uses: actions/upload-artifact@v7
               with:
-                  name: wasm-coi-loadable
+                  name: wasm-threads-loadable
                   path: |
-                      ./packages/duckdb-wasm/src/bindings/duckdb-coi.js
-                      ./packages/duckdb-wasm/src/bindings/duckdb-coi.pthread.js
-                      ./packages/duckdb-wasm/src/bindings/duckdb-coi.wasm
+                      ./packages/duckdb-wasm/src/bindings/duckdb-threads.js
+                      ./packages/duckdb-wasm/src/bindings/duckdb-threads.pthread.js
+                      ./packages/duckdb-wasm/src/bindings/duckdb-threads.wasm
+                  retention-days: 1
+
+            - name: Upload extension repository
+              uses: actions/upload-artifact@v7
+              with:
+                  name: extension-repository-threads-loadable
+                  path: ./build/extension_repository
+                  if-no-files-found: error
                   retention-days: 1
 
     js_libs:
         name: Js / Libraries
         runs-on: ubuntu-latest
         needs:
-            - wasm_mvp
-            - wasm_eh
-            - wasm_coi
+            - wasm_base
+            - wasm_threads
             - clang_format
             - eslint
         steps:
             - uses: actions/checkout@v6
               with:
-                  submodules: 'recursive'
+                  submodules: true
                   fetch-depth: 0
 
             - uses: actions/setup-node@v6
@@ -686,17 +660,12 @@ jobs:
 
             - uses: actions/download-artifact@v8
               with:
-                  name: wasm-mvp
+                  name: wasm-base
                   path: ./packages/duckdb-wasm/src/bindings/
 
             - uses: actions/download-artifact@v8
               with:
-                  name: wasm-eh
-                  path: ./packages/duckdb-wasm/src/bindings/
-
-            - uses: actions/download-artifact@v8
-              with:
-                  name: wasm-coi
+                  name: wasm-threads
                   path: ./packages/duckdb-wasm/src/bindings/
 
             - name: Prepare repository
@@ -742,7 +711,7 @@ jobs:
               shell: bash
               run: |
                       CHROME_BIN=`which google-chrome` yarn workspace @duckdb/duckdb-wasm test:chrome
-            
+
             #            - name: Test @duckdb/duckdb-wasm on Firefox
             #              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
             #              with:
@@ -943,15 +912,14 @@ jobs:
         name: Js / Libraries (loadable version)
         runs-on: ubuntu-latest
         needs:
-            - wasm_mvp_loadable
-            - wasm_eh_loadable
-            - wasm_coi_loadable
+            - wasm_base_loadable
+            - wasm_threads_loadable
             - clang_format
             - eslint
         steps:
             - uses: actions/checkout@v6
               with:
-                  submodules: 'recursive'
+                  submodules: true
                   fetch-depth: 0
 
             - uses: actions/setup-node@v6
@@ -1000,18 +968,23 @@ jobs:
 
             - uses: actions/download-artifact@v8
               with:
-                  name: wasm-mvp-loadable
+                  name: wasm-base-loadable
                   path: ./packages/duckdb-wasm/src/bindings/
 
             - uses: actions/download-artifact@v8
               with:
-                  name: wasm-eh-loadable
+                  name: wasm-threads-loadable
                   path: ./packages/duckdb-wasm/src/bindings/
 
             - uses: actions/download-artifact@v8
               with:
-                  name: wasm-coi-loadable
-                  path: ./packages/duckdb-wasm/src/bindings/
+                  name: extension-repository-base-loadable
+                  path: ./build/extension_repository/
+
+            - uses: actions/download-artifact@v8
+              with:
+                  name: extension-repository-threads-loadable
+                  path: ./build/extension_repository/
 
             - name: Prepare repository
               run: |
@@ -1074,7 +1047,12 @@ jobs:
               shell: bash
               run: |
                       CHROME_BIN=`which google-chrome` yarn workspace @duckdb/duckdb-wasm test:chrome
-            
+
+            - name: Test loadable threaded bundle on Chrome
+              shell: bash
+              run: |
+                      CHROME_BIN=`which google-chrome` yarn workspace @duckdb/duckdb-wasm test:chrome:threads:smoke
+
             #            - name: Test @duckdb/duckdb-wasm on Firefox
             #              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
             #              with:
@@ -1087,7 +1065,7 @@ jobs:
                       yarn workspace @duckdb/duckdb-wasm test:node
 
             - name: Deploy GitHub Page
-              if: github.ref == 'refs/heads/main'
+              if: false
               run: |
                   git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/$GITHUB_REPOSITORY
                   git fetch origin gh-pages
@@ -1104,7 +1082,7 @@ jobs:
         steps:
             - uses: actions/checkout@v6
               with:
-                  submodules: 'recursive'
+                  submodules: true
                   fetch-depth: 0
 
             - uses: actions/setup-node@v6
@@ -1153,18 +1131,23 @@ jobs:
 
             - uses: actions/download-artifact@v8
               with:
-                  name: wasm-mvp-loadable
+                  name: wasm-base-loadable
                   path: ./packages/duckdb-wasm/src/bindings/
 
             - uses: actions/download-artifact@v8
               with:
-                  name: wasm-eh-loadable
+                  name: wasm-threads-loadable
                   path: ./packages/duckdb-wasm/src/bindings/
 
             - uses: actions/download-artifact@v8
               with:
-                  name: wasm-coi-loadable
-                  path: ./packages/duckdb-wasm/src/bindings/
+                  name: extension-repository-base-loadable
+                  path: ./build/extension_repository/
+
+            - uses: actions/download-artifact@v8
+              with:
+                  name: extension-repository-threads-loadable
+                  path: ./build/extension_repository/
 
             - name: Prepare repository
               run: |
@@ -1263,7 +1246,7 @@ jobs:
         steps:
             - uses: actions/checkout@v6
               with:
-                  submodules: 'recursive'
+                  submodules: true
 
             - uses: actions/download-artifact@v8
               with:

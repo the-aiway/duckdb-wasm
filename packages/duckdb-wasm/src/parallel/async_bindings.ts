@@ -1,3 +1,4 @@
+import { OPFSAccessMode } from '../bindings/opfs_scratch';
 import {
     WorkerRequestType,
     WorkerResponseType,
@@ -17,7 +18,7 @@ import { DuckDBConfig } from '../bindings/config';
 import { InstantiationProgress } from '../bindings/progress';
 import { WebFile } from '../bindings/web_file';
 import { DuckDBDataProtocol } from '../bindings';
-import { searchOPFSFiles, isOPFSProtocol } from '../utils/opfs_util';
+import { searchOPFSFiles } from '../utils/opfs_util';
 import { ProgressEntry } from '../log';
 
 const TEXT_ENCODER = new TextEncoder();
@@ -177,7 +178,6 @@ export class AsyncDuckDB implements AsyncDuckDBBindings {
         switch (task.type) {
             case WorkerRequestType.CLOSE_PREPARED:
             case WorkerRequestType.COLLECT_FILE_STATISTICS:
-            case WorkerRequestType.REGISTER_OPFS_FILE_NAME:
             case WorkerRequestType.COPY_FILE_TO_PATH:
             case WorkerRequestType.DISCONNECT:
             case WorkerRequestType.DROP_FILE:
@@ -224,6 +224,12 @@ export class AsyncDuckDB implements AsyncDuckDBBindings {
                 break;
             case WorkerRequestType.GET_TABLE_NAMES:
                 if (response.type == WorkerResponseType.TABLE_NAMES) {
+                    task.promiseResolver(response.data);
+                    return;
+                }
+                break;
+            case WorkerRequestType.REGISTER_OPFS_FILE_NAME:
+                if (response.type == WorkerResponseType.OPFS_FILE_NAMES) {
                     task.promiseResolver(response.data);
                     return;
                 }
@@ -303,7 +309,7 @@ export class AsyncDuckDB implements AsyncDuckDBBindings {
     /** Received an error */
     protected onError(event: ErrorEvent): void {
         console.error(event);
-        console.error(`error in duckdb worker: ${event.message}`);
+        console.error(`error in duckdb worker: ${event.message} (${event.filename}:${event.lineno})`);
         this._pendingRequests.clear();
     }
 
@@ -608,13 +614,14 @@ export class AsyncDuckDB implements AsyncDuckDBBindings {
         await this.postTask(task, []);
     }
 
-    /** Enable file statistics */
-    public async registerOPFSFileName(name: string): Promise<void> {
-        const task = new WorkerTask<WorkerRequestType.REGISTER_OPFS_FILE_NAME, [string], null>(
+    /** Prepare an opfs:// file (or the files a glob pattern matches) for the next queries, returns their names.
+     * Registered files are held open until they are dropped, for writing unless `mode` is 'read' */
+    public async registerOPFSFileName(name: string, mode: OPFSAccessMode = 'write'): Promise<string[]> {
+        const task = new WorkerTask<WorkerRequestType.REGISTER_OPFS_FILE_NAME, [string, OPFSAccessMode], string[]>(
             WorkerRequestType.REGISTER_OPFS_FILE_NAME,
-            [name],
+            [name, mode],
         );
-        await this.postTask(task, []);
+        return await this.postTask(task, []);
     }
 
     /** Enable file statistics */
@@ -687,20 +694,20 @@ export class AsyncDuckDB implements AsyncDuckDBBindings {
         await this.postTask(task);
     }
 
+    /** opfs:// files named in SQL are prepared ahead of the query when the config asks for it, whether the
+     * database itself lives in OPFS or not */
     private shouldOPFSFileHandling(): boolean {
-        if (isOPFSProtocol(this.config.path ?? '')) {
-            return this.config.opfs?.fileHandling == 'auto';
-        }
-        return false;
+        return this.config.opfs?.fileHandling == 'auto';
     }
 
     private async registerOPFSFileFromSQL(text: string) {
         const files = searchOPFSFiles(text);
+        // A database that is attached is written to, everything else is read
+        const mode: OPFSAccessMode = /\bATTACH\b/i.test(text) ? 'write' : 'read';
         const result: string[] = [];
         for (const file of files) {
             try {
-                await this.registerOPFSFileName(file);
-                result.push(file);
+                result.push(...(await this.registerOPFSFileName(file, mode)));
             } catch (e) {
                 console.error(e);
                 throw new Error('File Not found:' + file);
