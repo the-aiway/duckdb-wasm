@@ -87,9 +87,11 @@ struct WebDBConfig {
     uint32_t maximum_threads = (STATIC_WEBDB_FEATURES & (1 << WebDBFeature::THREADS)) ? 4 : 1;
     /// The direct io flag
     bool use_direct_io = false;
-    /// The temporary directory, spilling is disabled without one. Buffers held by the runtime outside the WASM
-    /// heap by default
-    std::optional<std::string> temporary_directory = "js_buffer://tmp";
+    /// The temporary directory, spilling is disabled without one (spill: true uses js_buffer://tmp, buffers held by
+    /// the runtime outside the WASM heap).
+    /// aiway fork: off by default (upstream: js_buffer://tmp), a query above memory_limit fails with out-of-memory
+    /// instead of spilling without limit into JS memory. Enabled by spill: true or temporaryDirectory.
+    std::optional<std::string> temporary_directory = std::nullopt;
     /// The home directory, opfs://home where the runtime has an origin private file system
     std::optional<std::string> home_directory = std::nullopt;
     /// The extension repository (custom_extension_repository), extensions.duckdb.org otherwise

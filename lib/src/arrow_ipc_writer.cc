@@ -32,9 +32,24 @@ web::Status NanoarrowStatus(ArrowErrorCode code, ArrowError& error, const char* 
     } while (0)
 
 /// The DuckDB type a column is cast to before the Arrow conversion, so that the query config casts
-/// are applied by DuckDB. Only top level columns are cast, as before.
+/// are applied by DuckDB. Nested LIST, ARRAY, STRUCT and MAP children are cast too, as the Arrow C++ schema
+/// patch of the v1.5 fork did.
 LogicalType CastedType(const LogicalType& type, const QueryConfig& config) {
     switch (type.id()) {
+        case LogicalTypeId::LIST:
+            return LogicalType::LIST(CastedType(ListType::GetChildType(type), config));
+        case LogicalTypeId::ARRAY:
+            return LogicalType::ARRAY(CastedType(ArrayType::GetChildType(type), config), ArrayType::GetSize(type));
+        case LogicalTypeId::MAP:
+            return LogicalType::MAP(CastedType(MapType::KeyType(type), config),
+                                    CastedType(MapType::ValueType(type), config));
+        case LogicalTypeId::STRUCT: {
+            child_list_t<LogicalType> children;
+            for (auto& child : StructType::GetChildTypes(type)) {
+                children.emplace_back(child.first, CastedType(child.second, config));
+            }
+            return LogicalType::STRUCT(std::move(children));
+        }
         case LogicalTypeId::BIGINT:
         case LogicalTypeId::UBIGINT:
             return config.cast_bigint_to_double.value_or(false) ? LogicalType::DOUBLE : type;
@@ -88,17 +103,15 @@ struct ArrowIPCWriter::Impl {
         PatchSchema();
     }
 
-    /// Patch the Arrow schema for the casts that only change the Arrow type
+    /// Patch the Arrow schema for the casts that only change the Arrow type: with cast_timestamp_to_date every
+    /// timestamp, nested ones and TIMESTAMP_MS sources included, is a TIMESTAMP_MS here, encoded as an Arrow date64
     void PatchSchema() {
-        if (!config.cast_timestamp_to_date.value_or(false)) return;
-        for (idx_t col = 0; col < types.size(); col++) {
-            if (casted_types[col].id() != LogicalTypeId::TIMESTAMP_MS || types[col] == casted_types[col]) continue;
-            auto child = schema->children[col];
-            // DuckDB keeps the format string alive in the schema holder, it is not freed on its own
-            if (std::strncmp(child->format, "tsm:", 4) == 0) {
-                child->format = "tdm";
-            }
-        }
+        if (config.cast_timestamp_to_date.value_or(false)) PatchTimestamps(schema.get());
+    }
+    static void PatchTimestamps(ArrowSchema* node) {
+        // DuckDB keeps the format string alive in the schema holder, it is not freed on its own
+        if (std::strncmp(node->format, "tsm:", 4) == 0) node->format = "tdm";
+        for (int64_t i = 0; i < node->n_children; i++) PatchTimestamps(node->children[i]);
     }
 
     /// Initialize the writer, appending to the buffer

@@ -56,7 +56,9 @@ export interface DuckDBConfig {
     accessMode?: DuckDBAccessMode;
     /**
      * Spill data that does not fit in memory to the temporary directory, js_buffer://tmp by default:
-     * buffers held by the runtime outside the WASM heap. Enabled unless set to false.
+     * buffers held by the runtime outside the WASM heap, with no size limit. aiway fork: disabled unless set to
+     * true or a temporaryDirectory is given (upstream enables it by default); without it a query above
+     * memory_limit fails with an out-of-memory error.
      */
     spill?: boolean;
     /**
