@@ -30,7 +30,7 @@ describe('threads bundle smoke', () => {
         const worker = new Worker(BUNDLE.mainWorker!);
         const db = new duckdb.AsyncDuckDB(logger, worker);
         await timed('instantiate', () => db.instantiate(BUNDLE.mainModule, BUNDLE.pthreadWorker));
-        await timed('open', () => db.open({ opfs: { fileHandling: 'auto' }, extensionRepository: new URL('/extensions', self.location.href).href, allowUnsignedExtensions: true }));
+        await timed('open', () => db.open({ spill: true, opfs: { fileHandling: 'auto' }, extensionRepository: new URL('/extensions', self.location.href).href, allowUnsignedExtensions: true }));
         const conn = await timed('connect', () => db.connect());
         const one = async (sql: string) => (await conn.query(sql)).toArray()[0]?.toJSON();
         const settings = await one(
