@@ -22,7 +22,9 @@ const Worker = require('web-worker');
         await db.instantiate(DUCKDB_CONFIG.mainModule, DUCKDB_CONFIG.pthreadWorker);
 
         const conn = await db.connect();
-        await conn.query<{ v: arrow.Int }>(`SELECT count(*)::INTEGER as v FROM generate_series(0, 100) t(v)`);
+        arrow.tableFromIPC<{ v: arrow.Int }>(
+            await conn.query(`SELECT count(*)::INTEGER as v FROM generate_series(0, 100) t(v)`),
+        );
 
         await conn.close();
         await db.terminate();
