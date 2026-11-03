@@ -2,7 +2,6 @@
 
 #include <optional>
 
-#include "duckdb/web/arrow_casts.h"
 #include "duckdb/web/io/web_filesystem.h"
 #include "duckdb/web/webdb.h"
 
@@ -14,10 +13,12 @@ namespace {
 /// A platform feature
 enum PlatformFeature : uint32_t {
     BIGINT64ARRAY = 1,
+    /// The runtime has an origin private file system (opfs://)
+    OPFS = 2,
 };
 
 /// The runtime function to check runtime features
-#ifdef EMSCRIPTEN
+#ifdef __EMSCRIPTEN__
 extern "C" bool duckdb_web_test_platform_feature(uint32_t feature);
 #else
 bool duckdb_web_test_platform_feature(uint32_t _feature) { return false; }
@@ -74,6 +75,21 @@ WebDBConfig WebDBConfig::ReadFrom(std::string_view args_json) {
         }
         if (doc.HasMember("maximumThreads") && doc["maximumThreads"].IsNumber()) {
             config.maximum_threads = doc["maximumThreads"].GetInt();
+        }
+        if (doc.HasMember("temporaryDirectory") && doc["temporaryDirectory"].IsString()) {
+            config.temporary_directory = doc["temporaryDirectory"].GetString();
+        }
+        if (doc.HasMember("spill") && doc["spill"].IsBool() && !doc["spill"].GetBool()) {
+            config.temporary_directory = std::nullopt;
+        }
+        if (doc.HasMember("extensionRepository") && doc["extensionRepository"].IsString()) {
+            config.extension_repository = doc["extensionRepository"].GetString();
+        }
+        if (doc.HasMember("homeDirectory") && doc["homeDirectory"].IsString()) {
+            config.home_directory = doc["homeDirectory"].GetString();
+        } else if (duckdb_web_test_platform_feature(PlatformFeature::OPFS)) {
+            // What DuckDB keeps next to the user (persistent secrets) persists across sessions
+            config.home_directory = "opfs://home";
         }
         if (doc.HasMember("allowUnsignedExtensions") && doc["allowUnsignedExtensions"].IsBool()) {
             config.allow_unsigned_extensions = doc["allowUnsignedExtensions"].GetBool();

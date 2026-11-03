@@ -7,15 +7,13 @@
 #include <shared_mutex>
 #include <stack>
 
-#include "arrow/io/buffered.h"
-#include "arrow/result.h"
-#include "arrow/status.h"
 #include "duckdb/common/constants.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/vector.hpp"
 #include "duckdb/web/config.h"
 #include "duckdb/web/io/file_stats.h"
 #include "duckdb/web/io/readahead_buffer.h"
+#include "duckdb/web/status.h"
 #include "duckdb/web/utils/parallel.h"
 #include "duckdb/web/utils/wasm_response.h"
 #include "nonstd/span.h"
@@ -33,7 +31,9 @@ class WebFileSystem : public duckdb::FileSystem {
         BROWSER_FILEREADER = 2,
         BROWSER_FSACCESS = 3,
         HTTP = 4,
-        S3 = 5
+        S3 = 5,
+        /// Files held by the runtime outside the WASM heap (js_buffer://), DuckDB's temporary directory
+        JS_BUFFER = 6
     };
 
     /// A simple buffer.
@@ -74,6 +74,10 @@ class WebFileSystem : public duckdb::FileSystem {
         DataProtocol data_protocol_;
         /// The handle count
         size_t handle_count_;
+        /// The handles among them that only pin the registration (RegisterFileURL, RegisterFileBuffer)
+        size_t pin_count_ = 0;
+        /// Drop the file when its last handle closes (it was dropped while still open)
+        bool drop_when_closed_ = false;
         /// The file mutex
         SharedMutex file_mutex_ = {};
         /// The file size
@@ -127,6 +131,8 @@ class WebFileSystem : public duckdb::FileSystem {
         ReadAheadBuffer *readahead_;
         /// The position
         std::atomic<uint64_t> position_;
+        /// Does the handle only pin the registration?
+        bool pin_ = false;
 
         /// Close the file
         void Close() override;
@@ -152,6 +158,11 @@ class WebFileSystem : public duckdb::FileSystem {
         }
         /// Get the file name
         auto &GetName() const { return file_->file_name_; }
+        /// Mark the handle as pinning the registration, it does not count as a user of the file
+        void Pin() {
+            pin_ = true;
+            ++file_->pin_count_;
+        }
         /// Resolve readahead
         ReadAheadBuffer *ResolveReadAheadBuffer(std::shared_lock<SharedMutex> &file_guard);
     };
@@ -184,6 +195,12 @@ class WebFileSystem : public duckdb::FileSystem {
     /// XXX This could of course overflow....
     /// Make this a uint64 with emscripten BigInts maybe.
     inline uint32_t AllocateFileID() { return ++next_file_id_; }
+    /// Erase the registry entries of a file (requires the file system lock)
+    void Unregister(WebFile &file);
+    /// Read at a position, the handle's position is not touched
+    int64_t ReadAt(WebFileHandle &handle, void *buffer, int64_t nr_bytes, duckdb::idx_t position);
+    /// Write at a position, the handle's position is not touched
+    int64_t WriteAt(WebFileHandle &handle, void *buffer, int64_t nr_bytes, duckdb::idx_t position);
     /// Invalidate readaheads
     void InvalidateReadAheads(size_t file_id, std::unique_lock<SharedMutex> &file_guard);
 
@@ -210,11 +227,10 @@ class WebFileSystem : public duckdb::FileSystem {
     /// Write the file info as JSON
     rapidjson::Value WriteFileInfo(rapidjson::Document &doc, std::string_view file_name, uint32_t cache_epoch);
     /// Register a file URL
-    arrow::Result<std::unique_ptr<WebFileHandle>> RegisterFileURL(std::string_view file_name, std::string_view file_url,
-                                                                  DataProtocol protocol);
+    web::Result<std::unique_ptr<WebFileHandle>> RegisterFileURL(std::string_view file_name, std::string_view file_url,
+                                                                DataProtocol protocol);
     /// Register a file buffer
-    arrow::Result<std::unique_ptr<WebFileHandle>> RegisterFileBuffer(std::string_view file_name,
-                                                                     DataBuffer file_buffer);
+    web::Result<std::unique_ptr<WebFileHandle>> RegisterFileBuffer(std::string_view file_name, DataBuffer file_buffer);
     /// Try to drop a specific file
     bool TryDropFile(std::string_view file_name);
     /// drop a specific file
@@ -288,6 +304,10 @@ class WebFileSystem : public duckdb::FileSystem {
     idx_t SeekPosition(FileHandle &handle) override;
     /// Whether or not we can seek into the file
     bool CanSeek() override;
+    /// Drop a file now if it has no open handles, otherwise when its last handle closes
+    void DropFileWhenClosed(std::string_view file_name);
+    /// Copy the content of a file into another one
+    void CopyFileContent(const std::string &source, const std::string &target);
     /// Whether or not the FS handles plain files on disk. This is relevant for certain optimizations, as random reads
     /// in a file on-disk are much cheaper than e.g. random reads in a file over the network
     bool OnDiskFile(FileHandle &handle) override;

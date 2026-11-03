@@ -8,6 +8,6 @@ export { DEFAULT_RUNTIME } from '../bindings/runtime';
 export { NODE_RUNTIME } from '../bindings/runtime_node';
 import { Logger } from '../log';
 import { DuckDBRuntime } from '../bindings';
-import { DuckDBNodeBindings } from '../bindings/bindings_node_base';
+import { DuckDBNodeBindings } from '../bindings/bindings_node_common';
 import { DuckDBBundles } from '../platform';
 export declare function createDuckDB(bundles: DuckDBBundles, logger: Logger, runtime: DuckDBRuntime): Promise<DuckDBNodeBindings>;

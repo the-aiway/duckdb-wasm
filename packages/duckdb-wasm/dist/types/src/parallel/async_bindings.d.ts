@@ -1,3 +1,4 @@
+import { OPFSAccessMode } from '../bindings/opfs_scratch';
 import { WorkerTaskVariant, ConnectionID, WorkerTaskReturnType } from './worker_request';
 import { AsyncDuckDBBindings } from './async_bindings_interface';
 import { Logger } from '../log';
@@ -116,8 +117,9 @@ export declare class AsyncDuckDB implements AsyncDuckDBBindings {
     registerFileBuffer(name: string, buffer: Uint8Array): Promise<void>;
     /** Register a file handle. */
     registerFileHandle<HandleType>(name: string, handle: HandleType, protocol: DuckDBDataProtocol, directIO: boolean): Promise<void>;
-    /** Enable file statistics */
-    registerOPFSFileName(name: string): Promise<void>;
+    /** Prepare an opfs:// file (or the files a glob pattern matches) for the next queries, returns their names.
+     * Registered files are held open until they are dropped, for writing unless `mode` is 'read' */
+    registerOPFSFileName(name: string, mode?: OPFSAccessMode): Promise<string[]>;
     /** Enable file statistics */
     collectFileStatistics(name: string, enable: boolean): Promise<void>;
     /** Export file statistics */
@@ -132,6 +134,8 @@ export declare class AsyncDuckDB implements AsyncDuckDBBindings {
     insertCSVFromPath(conn: ConnectionID, path: string, options: CSVInsertOptions): Promise<void>;
     /** Insert a json file */
     insertJSONFromPath(conn: ConnectionID, path: string, options: JSONInsertOptions): Promise<void>;
+    /** opfs:// files named in SQL are prepared ahead of the query when the config asks for it, whether the
+     * database itself lives in OPFS or not */
     private shouldOPFSFileHandling;
     private registerOPFSFileFromSQL;
 }

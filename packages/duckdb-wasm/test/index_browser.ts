@@ -4,18 +4,14 @@ import * as check from 'wasm-feature-detect';
 
 // Configure the worker
 const DUCKDB_BUNDLES: duckdb.DuckDBBundles = {
-    mvp: {
-        mainModule: new URL('/static/duckdb-mvp.wasm', window.location.href).href,
-        mainWorker: new URL('/static/duckdb-browser-mvp.worker.js', window.location.href).href,
+    base: {
+        mainModule: new URL('/static/duckdb-base.wasm', window.location.href).href,
+        mainWorker: new URL('/static/duckdb-browser-base.worker.js', window.location.href).href,
     },
-    eh: {
-        mainModule: new URL('/static/duckdb-eh.wasm', window.location.href).href,
-        mainWorker: new URL('/static/duckdb-browser-eh.worker.js', window.location.href).href,
-    },
-    coi: {
-        mainModule: new URL('/static/duckdb-coi.wasm', window.location.href).href,
-        mainWorker: new URL('/static/duckdb-browser-coi.worker.js', window.location.href).href,
-        pthreadWorker: new URL('/static/duckdb-browser-coi.pthread.worker.js', window.location.href).href,
+    threads: {
+        mainModule: new URL('/static/duckdb-threads.wasm', window.location.href).href,
+        mainWorker: new URL('/static/duckdb-browser-threads.worker.js', window.location.href).href,
+        pthreadWorker: new URL('/static/duckdb-browser-threads.pthread.worker.js', window.location.href).href,
     },
 };
 let DUCKDB_BUNDLE: duckdb.DuckDBBundle | null = null;
@@ -27,18 +23,13 @@ describe('wasm check', () => {
             (await check.exceptions()) &&
             (await check.threads())
         ) {
-            expect(DUCKDB_BUNDLE!.mainModule).toEqual(DUCKDB_BUNDLES.coi!.mainModule);
-            expect(DUCKDB_BUNDLE!.mainWorker).toEqual(DUCKDB_BUNDLES.coi!.mainWorker);
-            expect(DUCKDB_BUNDLE!.pthreadWorker).toEqual(DUCKDB_BUNDLES.coi!.pthreadWorker);
+            expect(DUCKDB_BUNDLE!.mainModule).toEqual(DUCKDB_BUNDLES.threads!.mainModule);
+            expect(DUCKDB_BUNDLE!.mainWorker).toEqual(DUCKDB_BUNDLES.threads!.mainWorker);
+            expect(DUCKDB_BUNDLE!.pthreadWorker).toEqual(DUCKDB_BUNDLES.threads!.pthreadWorker);
         }
         if ((await check.exceptions()) && !(await check.threads())) {
-            expect(DUCKDB_BUNDLE!.mainModule).toEqual(DUCKDB_BUNDLES.eh!.mainModule);
-            expect(DUCKDB_BUNDLE!.mainWorker).toEqual(DUCKDB_BUNDLES.eh!.mainWorker);
-            expect(DUCKDB_BUNDLE!.pthreadWorker).toEqual(null);
-        }
-        if (!(await check.exceptions())) {
-            expect(DUCKDB_BUNDLE!.mainModule).toEqual(DUCKDB_BUNDLES.mvp!.mainModule);
-            expect(DUCKDB_BUNDLE!.mainWorker).toEqual(DUCKDB_BUNDLES.mvp!.mainWorker);
+            expect(DUCKDB_BUNDLE!.mainModule).toEqual(DUCKDB_BUNDLES.base.mainModule);
+            expect(DUCKDB_BUNDLE!.mainWorker).toEqual(DUCKDB_BUNDLES.base.mainWorker);
             expect(DUCKDB_BUNDLE!.pthreadWorker).toEqual(null);
         }
     });
@@ -74,6 +65,23 @@ const resolveData = async (url: string) => {
     }
 };
 
+// Loadable bundles autoload parquet/json/icu from a repository: the tests use the one built locally (karma
+// serves build/extension_repository under /extensions), which is unsigned. Static bundles ignore it.
+{
+    const defaults = {
+        extensionRepository: new URL('/extensions', window.location.href).href,
+        allowUnsignedExtensions: true,
+    };
+    const asyncOpen = duckdb.AsyncDuckDB.prototype.open;
+    duckdb.AsyncDuckDB.prototype.open = function (config: duckdb.DuckDBConfig) {
+        return asyncOpen.call(this, { ...defaults, ...config });
+    };
+    const syncOpen = duckdb_blocking.DuckDBBindingsBase.prototype.open;
+    duckdb_blocking.DuckDBBindingsBase.prototype.open = function (config: duckdb.DuckDBConfig) {
+        return syncOpen.call(this, { ...defaults, ...config });
+    };
+}
+
 // Test environment
 let db: duckdb_blocking.DuckDBBindings | null = null;
 let adb: duckdb.AsyncDuckDB | null = null;
@@ -83,11 +91,14 @@ beforeAll(async () => {
     const logger = new duckdb_blocking.VoidLogger();
     db = await duckdb_blocking.createDuckDB(DUCKDB_BUNDLES, logger, duckdb_blocking.BROWSER_RUNTIME);
     await db.instantiate(_ => {});
+    // The database the constructor opens has no extension repository, open with the test defaults
+    db.open({});
 
     DUCKDB_BUNDLE = await duckdb.selectBundle(DUCKDB_BUNDLES);
     worker = await duckdb.createWorker(DUCKDB_BUNDLE!.mainWorker!);
     adb = new duckdb.AsyncDuckDB(logger, worker);
     await adb.instantiate(DUCKDB_BUNDLE!.mainModule, DUCKDB_BUNDLE!.pthreadWorker);
+    await adb.open({});
 });
 
 afterAll(async () => {
@@ -112,6 +123,8 @@ import { longQueries } from './long_queries.test';
 //import { testEXCEL } from './excel.test';
 //import { testJSON } from './json.test';
 import { testPivot } from './pivot.test';
+import { testSpill } from './spill.test';
+import { testJsBufferFile } from './js_buffer_file.test';
 
 const baseURL = window.location.origin;
 const dataURL = `${baseURL}/data`;
@@ -125,6 +138,8 @@ testTableNamesAsync(() => adb!);
 testRegressionAsync(() => adb!);
 testAllTypes(() => db!);
 testAllTypesAsync(() => adb!);
+testSpill(() => adb!);
+testJsBufferFile();
 testBindings(() => db!, dataURL);
 testAsyncBindings(() => adb!, dataURL, duckdb.DuckDBDataProtocol.HTTP);
 testBatchStream(() => db!);
