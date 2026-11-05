@@ -1224,26 +1224,6 @@ jobs:
               run: |
                       yarn workspace @duckdb/duckdb-wasm test:node
 
-            - name: Publish to NPM
-              env:
-                  TAG: 'next'
-              if: github.ref == 'refs/heads/main'
-              run: |
-                  echo "${TAG}"
-                  ./scripts/npm_publish_lib.sh
-                  ./scripts/npm_publish_shell.sh
-                  ./scripts/npm_publish_react.sh
-
-            - name: Publish to NPM on tag
-              env:
-                  TAG: 'latest'
-              if: github.event_name == 'create'
-              run: |
-                  echo "${TAG}"
-                  ./scripts/npm_publish_lib.sh
-                  ./scripts/npm_publish_shell.sh
-                  ./scripts/npm_publish_react.sh
-
     merge_reports:
         name: Merge benchmark reports
         runs-on: ubuntu-latest
