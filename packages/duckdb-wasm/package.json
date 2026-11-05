@@ -23,7 +23,7 @@
         "csv"
     ],
     "dependencies": {
-        "qs": "^6.16.1"
+        "qs": "^6.16.2"
     },
     "devDependencies": {
         "@types/emscripten": "1.39.10",
