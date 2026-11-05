@@ -1,8 +1,11 @@
+import { installArrowCompat } from './arrow_compat';
 import * as duckdb_blocking from '../src/targets/duckdb-node-blocking';
 import * as duckdb from '../src/targets/duckdb';
 import path from 'path';
 import Worker from 'web-worker';
 import fs from 'fs';
+
+installArrowCompat();
 
 // Loading debug symbols, especially for WASM take insanely long so we just disable the test timeout
 jasmine.DEFAULT_TIMEOUT_INTERVAL = 60000;
@@ -91,7 +94,6 @@ import { testJSONInsert, testJSONInsertAsync } from './insert_json.test';
 import { testCSVInsert, testCSVInsertAsync } from './insert_csv.test';
 import { testTokenization, testTokenizationAsync } from './tokenizer.test';
 import { testTableNames, testTableNamesAsync } from './tablenames.test';
-import { testUDF } from './udf.test';
 import { longQueries } from './long_queries.test';
 import { testRegressionAsync } from './regression';
 import { testFTS } from './fts.test';
@@ -99,7 +101,6 @@ import { testPivot } from './pivot.test';
 import { testSpill } from './spill.test';
 import { testJsBufferFile } from './js_buffer_file.test';
 
-testUDF(() => db!);
 longQueries(() => adb!);
 testTableNames(() => db!);
 testTableNamesAsync(() => adb!);

@@ -1,4 +1,7 @@
+import { installArrowCompat } from './arrow_compat';
 import * as duckdb from '../src/';
+
+installArrowCompat();
 
 declare const __karma__: { config: { args: string[] } };
 

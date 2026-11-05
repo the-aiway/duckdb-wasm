@@ -1,5 +1,8 @@
 /** Instance churn on the threads bundle: create, query, terminate, many times. Each instance brings 9 workers. */
+import { installArrowCompat } from './arrow_compat';
 import * as duckdb from '../src/';
+
+installArrowCompat();
 
 const BUNDLE: duckdb.DuckDBBundle = {
     mainModule: '/static/duckdb-threads.wasm',

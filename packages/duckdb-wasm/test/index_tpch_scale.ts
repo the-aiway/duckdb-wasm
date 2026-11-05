@@ -3,7 +3,10 @@
  * 22 queries, without spilling and with spilling to js_buffer://. Every stage is logged. Needs a wasm with the
  * tpch extension linked in (EXTRA_CMAKE_FLAGS=-DDUCKDB_WASM_STATIC_TPCH=1). Run with karma/tpch-scale-chrome.cjs.
  */
+import { installArrowCompat } from './arrow_compat';
 import * as duckdb from '../src/';
+
+installArrowCompat();
 
 const BUNDLES: Record<string, duckdb.DuckDBBundle> = {
     base: {

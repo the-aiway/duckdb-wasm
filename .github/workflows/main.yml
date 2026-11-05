@@ -679,7 +679,8 @@ jobs:
                   script: |-
                       git config --global --add safe.directory '*'
                       mkdir -p ./lib/build/wasm/release ./reports
-                      yarn install --frozen-lockfile
+                      # aiway fork: the ci-env image ships Node 18; some deps declare engines >=20
+                      yarn install --frozen-lockfile --ignore-engines
                       ./scripts/generate_tpch_tbl.sh 0.01
                       ./scripts/generate_tpch_arrow.sh 0.01
                       ./scripts/generate_tpch_duckdb.sh 0.01
@@ -731,7 +732,7 @@ jobs:
             - name: Build examples
               shell: bash
               run: |
-                      yarn install
+                      yarn install --ignore-engines
                       yarn workspace @duckdb/duckdb-wasm-examples-bare-node test
                       yarn workspace @duckdb/duckdb-wasm-examples-bare-browser build
                       yarn workspace @duckdb/duckdb-wasm-examples-esbuild-node build
@@ -779,7 +780,8 @@ jobs:
                   script: |-
                       git config --global --add safe.directory '*'
                       mkdir -p ./lib/build/wasm/release ./reports
-                      yarn install --frozen-lockfile
+                      # aiway fork: the ci-env image ships Node 18; some deps declare engines >=20
+                      yarn install --frozen-lockfile --ignore-engines
                       ./scripts/generate_tpch_tbl.sh 0.01
                       ./scripts/generate_tpch_arrow.sh 0.01
                       ./scripts/generate_tpch_duckdb.sh 0.01
@@ -813,7 +815,8 @@ jobs:
                   script: |-
                       git config --global --add safe.directory '*'
                       mkdir -p ./lib/build/wasm/release ./reports
-                      yarn install --frozen-lockfile
+                      # aiway fork: the ci-env image ships Node 18; some deps declare engines >=20
+                      yarn install --frozen-lockfile --ignore-engines
                       ./scripts/generate_tpch_tbl.sh 0.1
                       ./scripts/generate_tpch_arrow.sh 0.1
                       ./scripts/generate_tpch_duckdb.sh 0.1
@@ -847,7 +850,8 @@ jobs:
                   script: |-
                       git config --global --add safe.directory '*'
                       mkdir -p ./lib/build/wasm/release ./reports
-                      yarn install --frozen-lockfile
+                      # aiway fork: the ci-env image ships Node 18; some deps declare engines >=20
+                      yarn install --frozen-lockfile --ignore-engines
                       ./scripts/generate_tpch_tbl.sh 0.25
                       ./scripts/generate_tpch_arrow.sh 0.25
                       ./scripts/generate_tpch_duckdb.sh 0.25
@@ -881,7 +885,8 @@ jobs:
                   script: |-
                       git config --global --add safe.directory '*'
                       mkdir -p ./lib/build/wasm/release ./reports
-                      yarn install --frozen-lockfile
+                      # aiway fork: the ci-env image ships Node 18; some deps declare engines >=20
+                      yarn install --frozen-lockfile --ignore-engines
                       ./scripts/generate_tpch_tbl.sh 0.5
                       ./scripts/generate_tpch_arrow.sh 0.5
                       ./scripts/generate_tpch_duckdb.sh 0.5
@@ -997,7 +1002,8 @@ jobs:
                   script: |-
                       git config --global --add safe.directory '*'
                       mkdir -p ./lib/build/wasm/release ./reports
-                      yarn install --frozen-lockfile
+                      # aiway fork: the ci-env image ships Node 18; some deps declare engines >=20
+                      yarn install --frozen-lockfile --ignore-engines
                       ./scripts/generate_tpch_tbl.sh 0.01
                       ./scripts/generate_tpch_arrow.sh 0.01
                       ./scripts/generate_tpch_duckdb.sh 0.01
@@ -1160,7 +1166,8 @@ jobs:
                   script: |-
                       git config --global --add safe.directory '*'
                       mkdir -p ./lib/build/wasm/release ./reports
-                      yarn install --frozen-lockfile
+                      # aiway fork: the ci-env image ships Node 18; some deps declare engines >=20
+                      yarn install --frozen-lockfile --ignore-engines
                       ./scripts/generate_tpch_tbl.sh 0.01
                       ./scripts/generate_tpch_arrow.sh 0.01
                       ./scripts/generate_tpch_duckdb.sh 0.01
@@ -1216,26 +1223,6 @@ jobs:
               shell: bash
               run: |
                       yarn workspace @duckdb/duckdb-wasm test:node
-
-            - name: Publish to NPM
-              env:
-                  TAG: 'next'
-              if: github.ref == 'refs/heads/main'
-              run: |
-                  echo "${TAG}"
-                  ./scripts/npm_publish_lib.sh
-                  ./scripts/npm_publish_shell.sh
-                  ./scripts/npm_publish_react.sh
-
-            - name: Publish to NPM on tag
-              env:
-                  TAG: 'latest'
-              if: github.event_name == 'create'
-              run: |
-                  echo "${TAG}"
-                  ./scripts/npm_publish_lib.sh
-                  ./scripts/npm_publish_shell.sh
-                  ./scripts/npm_publish_react.sh
 
     merge_reports:
         name: Merge benchmark reports

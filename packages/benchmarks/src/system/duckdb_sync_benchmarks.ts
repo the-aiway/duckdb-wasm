@@ -11,6 +11,10 @@ import {
 } from './data_generator';
 import { getTPCHParquetFilePath, getTPCHQuery } from './tpch_loader';
 
+const queryTable = (conn: duckdb.DuckDBConnection, text: string) => arrow.tableFromIPC(conn.query(text));
+const toIPC = (schema: arrow.Schema, batches: arrow.RecordBatch[]) =>
+    arrow.tableToIPC(new arrow.Table(schema, batches), 'stream');
+
 export class DuckDBSyncLoadedTPCHBenchmark implements SystemBenchmark {
     database: duckdb.DuckDBBindings;
     connection: duckdb.DuckDBConnection | null;
@@ -202,14 +206,15 @@ export class DuckDBSyncIntegerSortBenchmark implements SystemBenchmark {
     async beforeAll(ctx: SystemBenchmarkContext): Promise<void> {
         const [schema, batches] = generateArrowXInt32(this.tuples, this.columnCount);
         this.connection = this.database.connect();
-        this.connection.insertArrowTable(new arrow.Table(schema, batches), {
+        this.connection.insertArrowFromIPCStream(toIPC(schema, batches), {
             schema: 'main',
             name: this.getName(),
         });
     }
     async beforeEach(_ctx: SystemBenchmarkContext): Promise<void> {}
     async run(_ctx: SystemBenchmarkContext): Promise<void> {
-        const result = this.connection!.query<{ v0: arrow.Int32 }>(
+        const result = queryTable(
+            this.connection!,
             `SELECT * FROM ${this.getName()} ORDER BY (${this.orderBy.join(',')})`,
         );
         let n = 0;
@@ -272,14 +277,15 @@ export class DuckDBSyncIntegerTopKBenchmark implements SystemBenchmark {
     async beforeAll(ctx: SystemBenchmarkContext): Promise<void> {
         const [schema, batches] = generateArrowXInt32(this.tuples, this.columnCount);
         this.connection = this.database.connect();
-        this.connection.insertArrowTable(new arrow.Table(schema, batches), {
+        this.connection.insertArrowFromIPCStream(toIPC(schema, batches), {
             schema: 'main',
             name: this.getName(),
         });
     }
     async beforeEach(_ctx: SystemBenchmarkContext): Promise<void> {}
     async run(_ctx: SystemBenchmarkContext): Promise<void> {
-        const result = this.connection!.query<{ v0: arrow.Int32 }>(
+        const result = queryTable(
+            this.connection!,
             `SELECT * FROM ${this.getName()} ORDER BY (${this.orderBy.join(',')}) LIMIT ${this.k}`,
         );
         let n = 0;
@@ -329,14 +335,14 @@ export class DuckDBSyncIntegerSumBenchmark implements SystemBenchmark {
     async beforeAll(ctx: SystemBenchmarkContext): Promise<void> {
         const [schema, batches] = generateArrowGroupedInt32(this.tuples, this.groupSize);
         this.connection = this.database.connect();
-        this.connection.insertArrowTable(new arrow.Table(schema, batches), {
+        this.connection.insertArrowFromIPCStream(toIPC(schema, batches), {
             schema: 'main',
             name: this.getName(),
         });
     }
     async beforeEach(_ctx: SystemBenchmarkContext): Promise<void> {}
     async run(_ctx: SystemBenchmarkContext): Promise<void> {
-        const result = this.connection!.query<{ v0: arrow.Int32 }>(`SELECT SUM(v1) FROM ${this.getName()} GROUP BY v0`);
+        const result = queryTable(this.connection!, `SELECT SUM(v1) FROM ${this.getName()} GROUP BY v0`);
         let n = 0;
         for (const v of result.getChildAt(0)!) {
             noop(v);
@@ -391,7 +397,8 @@ export class DuckDBSyncCSVSumBenchmark implements SystemBenchmark {
     }
     async beforeEach(_ctx: SystemBenchmarkContext): Promise<void> {}
     async run(_ctx: SystemBenchmarkContext): Promise<void> {
-        const result = this.connection!.query(
+        const result = queryTable(
+            this.connection!,
             `SELECT SUM(v1) FROM read_csv('TEMP', delim = '|', header = False, columns={'v0': 'INTEGER', 'v1': 'INTEGER'}) GROUP BY v0`,
         );
         let n = 0;
@@ -442,16 +449,14 @@ export class DuckDBSyncRegexBenchmark implements SystemBenchmark {
     async beforeAll(ctx: SystemBenchmarkContext): Promise<void> {
         const [schema, batches] = generateArrowUtf8(this.tuples, this.chars);
         this.connection = this.database.connect();
-        this.connection.insertArrowTable(new arrow.Table(schema, batches), {
+        this.connection.insertArrowFromIPCStream(toIPC(schema, batches), {
             schema: 'main',
             name: this.getName(),
         });
     }
     async beforeEach(_ctx: SystemBenchmarkContext): Promise<void> {}
     async run(_ctx: SystemBenchmarkContext): Promise<void> {
-        const result = this.connection!.query<{ v0: arrow.Int32 }>(
-            `SELECT * FROM ${this.getName()} WHERE v0 LIKE '_#%'`,
-        );
+        const result = queryTable(this.connection!, `SELECT * FROM ${this.getName()} WHERE v0 LIKE '_#%'`);
         let n = 0;
         for (const v of result.getChildAt(0)!) {
             noop(v);
@@ -504,23 +509,26 @@ export class DuckDBSyncIntegerJoin2Benchmark implements SystemBenchmark {
         const [schemaA, batchesA] = generateArrowInt32(this.tuplesA);
         const [schemaB, batchesB] = generateArrow2Int32(this.tuplesB, this.stepAB);
         this.connection = this.database.connect();
-        this.connection.insertArrowTable(new arrow.Table(schemaA, batchesA), {
+        this.connection.insertArrowFromIPCStream(toIPC(schemaA, batchesA), {
             schema: 'main',
             name: `${this.getName()}_a`,
         });
-        this.connection.insertArrowTable(new arrow.Table(schemaB, batchesB), {
+        this.connection.insertArrowFromIPCStream(toIPC(schemaB, batchesB), {
             schema: 'main',
             name: `${this.getName()}_b`,
         });
     }
     async beforeEach(_ctx: SystemBenchmarkContext): Promise<void> {}
     async run(_ctx: SystemBenchmarkContext): Promise<void> {
-        const result = this.connection!.query<{ v0: arrow.Int32 }>(`
+        const result = queryTable(
+            this.connection!,
+            `
             SELECT *
             FROM ${this.getName()}_a a, ${this.getName()}_b b
             WHERE a.v0 = b.v1
             AND a.v0 < ${this.filterA}
-        `);
+        `,
+        );
         let n = 0;
         for (const v of result.getChildAt(0)!) {
             noop(v);
@@ -589,28 +597,31 @@ export class DuckDBSyncIntegerJoin3Benchmark implements SystemBenchmark {
         const [schemaB, batchesB] = generateArrow2Int32(this.tuplesB, this.stepAB);
         const [schemaC, batchesC] = generateArrow2Int32(this.tuplesC, this.stepBC);
         this.connection = this.database.connect();
-        this.connection.insertArrowTable(new arrow.Table(schemaA, batchesA), {
+        this.connection.insertArrowFromIPCStream(toIPC(schemaA, batchesA), {
             schema: 'main',
             name: `${this.getName()}_a`,
         });
-        this.connection.insertArrowTable(new arrow.Table(schemaB, batchesB), {
+        this.connection.insertArrowFromIPCStream(toIPC(schemaB, batchesB), {
             schema: 'main',
             name: `${this.getName()}_b`,
         });
-        this.connection.insertArrowTable(new arrow.Table(schemaC, batchesC), {
+        this.connection.insertArrowFromIPCStream(toIPC(schemaC, batchesC), {
             schema: 'main',
             name: `${this.getName()}_c`,
         });
     }
     async beforeEach(_ctx: SystemBenchmarkContext): Promise<void> {}
     async run(_ctx: SystemBenchmarkContext): Promise<void> {
-        const result = this.connection!.query<{ v0: arrow.Int32 }>(`
+        const result = queryTable(
+            this.connection!,
+            `
             SELECT *
             FROM ${this.getName()}_a a, ${this.getName()}_b b, ${this.getName()}_c c
             WHERE a.v0 = b.v1
             AND b.v0 = c.v1
             AND a.v0 < ${this.filterA}
-        `);
+        `,
+        );
         let n = 0;
         for (const v of result.getChildAt(0)!) {
             noop(v);
